@@ -13,6 +13,7 @@ dist
 dist-ssr
 *.local
 bun.lock
+yarn.lock
 
 # Environment variables
 .env
