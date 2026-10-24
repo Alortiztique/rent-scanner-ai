@@ -1,7 +1,7 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { ScoutListing } from '../types';
 import { CITIES } from '../data/cities';
-import { searchLiveSubletsWithTavily, type TavilyScoutResult } from '../services/tavily';
+import { scoutModeSetting, searchLiveSubletsWithTavily, type TavilyScoutResult } from '../services/tavily';
 import {
   formatSourceHost,
   getCitySearchProfile,
@@ -43,6 +43,15 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
   const [customQuery, setCustomQuery] = useState('');
   const [search, setSearch] = useState<ScoutState>({ status: 'idle' });
   const requestSeq = useRef(0);
+  const inFlight = useRef<AbortController | null>(null);
+
+  const cancelInFlight = () => {
+    inFlight.current?.abort();
+    inFlight.current = null;
+  };
+
+  // Closing the Scout unmounts this dialog; cancel any search that is still running.
+  useEffect(() => cancelInFlight, []);
 
   const city = SCOUT_CITIES.find((c) => c.id === cityId);
   const profile = city ? getCitySearchProfile(city.id) : undefined;
@@ -57,6 +66,7 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
 
   const handleCityChange = (nextCityId: string) => {
     requestSeq.current += 1; // invalidate any in-flight response for the previous city
+    cancelInFlight();
     setCityId(nextCityId);
     setSearch({ status: 'idle' });
   };
@@ -64,16 +74,20 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
   const handleExecuteSearch = async () => {
     if (!city || isLoading) return;
     const requestId = ++requestSeq.current;
+    cancelInFlight();
+    const controller = new AbortController();
+    inFlight.current = controller;
     const target = { id: city.id, name: city.name };
     setSearch({ status: 'loading', cityId: target.id, cityName: target.name });
 
     let next: TavilyScoutResult;
     try {
-      next = await searchLiveSubletsWithTavily(target.name, customQuery);
-    } catch (err) {
-      console.error('Tavily search failure:', err);
+      next = await searchLiveSubletsWithTavily(target.name, customQuery, { signal: controller.signal });
+    } catch {
+      console.error('[Scout] search failed unexpectedly.');
       next = { listings: [], mode: 'unavailable', error: 'Scout search failed unexpectedly.' };
     }
+    if (inFlight.current === controller) inFlight.current = null;
 
     if (requestId !== requestSeq.current) return; // a newer search or city change superseded this one
     setSearch({ status: 'done', cityId: target.id, cityName: target.name, result: next });
@@ -98,7 +112,7 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
     if (isLoading) {
       return (
         <div className="p-8 text-center border border-zinc-900 bg-zinc-900/30 text-xs text-cyan-400 animate-pulse">
-          SEARCHING {domains.toUpperCase()} FOR {cityName.toUpperCase()} VIA TAVILY API...
+          SEARCHING {domains.toUpperCase()} FOR {cityName.toUpperCase()} VIA THIS SITE'S SCOUT SERVER...
         </div>
       );
     }
@@ -106,7 +120,11 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
     if (!result) {
       return (
         <div className="p-8 text-center border border-zinc-900 bg-zinc-900/30 text-xs text-zinc-500">
-          No search has run yet. Click "RUN SCOUT" to search {domains} for {city.name}.
+          {!scoutModeSetting.ok
+            ? 'Scout is misconfigured: VITE_SCOUT_MODE must be "demo" or "server". Searches will not run.'
+            : scoutModeSetting.mode === 'demo'
+              ? `No search has run yet. Local demo mode: "RUN SCOUT" shows a labelled sample for ${city.name} and sends no request.`
+              : `No search has run yet. Click "RUN SCOUT" to search ${domains} for ${city.name}.`}
         </div>
       );
     }
@@ -118,18 +136,27 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
           <div>
             <span className="font-bold block mb-1 uppercase">Demo mode — not a live search</span>
             <p className="font-sans leading-relaxed">{result.rawAnswer}</p>
+            <p className="font-sans leading-relaxed text-amber-200/80 mt-1">
+              {result.demoSource === 'server'
+                ? "This site's Scout server answered in demo mode, so it has no live search enabled."
+                : 'This build uses local demo mode, so no search request was sent.'}
+            </p>
           </div>
         </div>
       );
     }
 
-    if (result.mode === 'unavailable' || result.mode === 'unsupported') {
+    if (result.mode === 'unavailable' || result.mode === 'unsupported' || result.mode === 'cancelled') {
       return (
         <div className="p-3 border border-red-800 bg-red-950/30 text-xs text-red-200 flex gap-2">
           <TriangleAlert className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
           <div>
             <span className="font-bold block mb-1 uppercase">
-              {result.mode === 'unsupported' ? 'Unsupported city' : 'Search unavailable'}
+              {result.mode === 'unsupported'
+                ? 'Unsupported city'
+                : result.mode === 'cancelled'
+                  ? 'Search cancelled'
+                  : 'Search unavailable'}
             </span>
             <p className="font-sans leading-relaxed">{result.error}</p>
             <p className="font-sans leading-relaxed text-red-300/80 mt-1">
@@ -264,7 +291,11 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
 
           {result?.query && (
             <p className="text-[11px] text-zinc-500">
-              {result.mode === 'demo' ? 'Query (not sent in demo mode): ' : 'Query sent: '}
+              {result.mode !== 'demo'
+                ? 'Query searched: '
+                : result.demoSource === 'server'
+                  ? 'Query (server demo mode, not searched): '
+                  : 'Query (local demo, not sent): '}
               <code className="text-zinc-300 break-words">{result.query}</code>
             </p>
           )}
@@ -357,7 +388,16 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
         {/* Footer */}
         <div className="p-4 bg-zinc-900 border-t border-zinc-800 flex items-center justify-between">
           <span className="text-[11px] text-zinc-500">
-            Endpoint: <code className="text-zinc-400">https://api.tavily.com/search</code>
+            {!scoutModeSetting.ok ? (
+              'Scout mode setting is invalid; no searches run.'
+            ) : scoutModeSetting.mode === 'demo' ? (
+              'Local demo mode: synthetic samples, no network request.'
+            ) : (
+              <>
+                Up to 5 unverified hits{domains ? ` from ${domains}` : ''}, via this site's{' '}
+                <code className="text-zinc-400">/api/scout</code>
+              </>
+            )}
           </span>
           <button
             type="button"
