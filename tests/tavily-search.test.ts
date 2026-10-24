@@ -189,11 +189,12 @@ test('response parsing keeps usable hits, de-duplicates, caps, and never pads', 
     assert.equal(parsed.results[0].content, 'snippet 1');
   }
 
-  const sparse = parseTavilySearchResponse({ results: [{ url: 'https://kleinanzeigen.de/s-1', content: 'x' }] });
+  const sparse = parseTavilySearchResponse({
+    results: [{ title: 'Zimmer Moabit', url: 'https://kleinanzeigen.de/s-1', content: '' }],
+  });
   assert.equal(sparse.ok, true);
   if (sparse.ok) {
-    assert.equal(sparse.results.length, 1);
-    assert.equal(sparse.results[0].title, 'kleinanzeigen.de');
+    assert.deepEqual(sparse.results, [{ title: 'Zimmer Moabit', url: 'https://kleinanzeigen.de/s-1', content: '' }]);
     assert.equal(sparse.answer, undefined);
   }
 
@@ -204,6 +205,56 @@ test('response parsing keeps usable hits, de-duplicates, caps, and never pads', 
     assert.equal(parseTavilySearchResponse(malformed).ok, false, JSON.stringify(malformed));
   }
   assert.equal(formatSourceHost('https://www.spareroom.co.uk/flatshare/1'), 'spareroom.co.uk');
+});
+
+// Provider hits whose required title/content fields are missing or not strings.
+const MALFORMED_HITS: Array<[string, Record<string, unknown>]> = [
+  ['review payload: numeric title, object content', { url: 'https://wg-gesucht.de/123', title: 17, content: {} }],
+  ['missing title', { url: 'https://wg-gesucht.de/a', content: 'Zwischenmiete Wedding' }],
+  ['null title', { url: 'https://wg-gesucht.de/b', title: null, content: 'Zwischenmiete Wedding' }],
+  ['array title', { url: 'https://wg-gesucht.de/c', title: ['WG-Zimmer'], content: 'Zwischenmiete Wedding' }],
+  ['blank title', { url: 'https://wg-gesucht.de/d', title: '   ', content: 'Zwischenmiete Wedding' }],
+  ['missing content', { url: 'https://wg-gesucht.de/e', title: 'WG-Zimmer Wedding' }],
+  ['null content', { url: 'https://wg-gesucht.de/f', title: 'WG-Zimmer Wedding', content: null }],
+  ['numeric content', { url: 'https://wg-gesucht.de/g', title: 'WG-Zimmer Wedding', content: 520 }],
+  ['boolean content', { url: 'https://wg-gesucht.de/h', title: 'WG-Zimmer Wedding', content: false }],
+  ['missing title and content', { url: 'https://wg-gesucht.de/i' }],
+];
+
+test('a hit with a missing or non-string title/content is rejected, never filled in', () => {
+  for (const [label, hit] of MALFORMED_HITS) {
+    const parsed = parseTavilySearchResponse({ results: [hit] });
+    assert.equal(parsed.ok, false, label);
+    if (!parsed.ok) assert.match(parsed.error, /Malformed Tavily response/, label);
+  }
+});
+
+test('a wholly malformed result list is unavailable, distinct from an empty successful list', () => {
+  const allMalformed = parseTavilySearchResponse({ results: MALFORMED_HITS.map(([, hit]) => hit) });
+  assert.equal(allMalformed.ok, false);
+
+  const empty = parseTavilySearchResponse({ results: [] });
+  assert.deepEqual(empty, { ok: true, answer: undefined, results: [] });
+});
+
+test('a mixed list keeps only valid hits with their genuine provider text', () => {
+  const parsed = parseTavilySearchResponse({
+    results: [
+      { url: 'https://www.wg-gesucht.de/1.html', title: 17, content: {} },
+      { url: 'https://www.wg-gesucht.de/2.html', title: 'WG-Zimmer Neukölln | WG-Gesucht', content: '  Zwischenmiete, 520 € warm.  ' },
+      { url: 'https://www.kleinanzeigen.de/s-3', content: 'missing title' },
+      // Same URL as the valid hit below: the malformed copy must not block it.
+      { url: 'https://www.kleinanzeigen.de/s-4', title: 'Zimmer Wedding', content: null },
+      { url: 'https://www.kleinanzeigen.de/s-4', title: 'Zimmer Wedding', content: 'Untermiete ab sofort.' },
+    ],
+  });
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) {
+    assert.deepEqual(parsed.results, [
+      { url: 'https://www.wg-gesucht.de/2.html', title: 'WG-Zimmer Neukölln | WG-Gesucht', content: 'Zwischenmiete, 520 € warm.' },
+      { url: 'https://www.kleinanzeigen.de/s-4', title: 'Zimmer Wedding', content: 'Untermiete ab sofort.' },
+    ]);
+  }
 });
 
 type FakeCall = { url: string; body: Record<string, unknown> };
@@ -297,6 +348,32 @@ test('empty success is distinct from failure; failures and malformed payloads ar
   if (malformed.kind === 'unavailable') {
     assert.match(malformed.error, /Malformed/);
     assert.deepEqual(malformed.city, { id: 'sf', name: 'San Francisco' });
+  }
+
+  // The review's payload must not become a live result with a synthesized title/snippet.
+  const malformedHit = await run(
+    () => jsonResponse({ results: [{ url: 'https://wg-gesucht.de/123', title: 17, content: {} }] }),
+    'Berlin'
+  );
+  assert.equal(malformedHit.kind, 'unavailable');
+  if (malformedHit.kind === 'unavailable') {
+    assert.match(malformedHit.error, /Malformed/);
+    assert.deepEqual(malformedHit.city, { id: 'berlin', name: 'Berlin' });
+  }
+
+  const mixed = await run(
+    () =>
+      jsonResponse({
+        results: [
+          { url: 'https://wg-gesucht.de/123', title: 17, content: {} },
+          { url: 'https://wg-gesucht.de/456', title: 'WG-Zimmer Moabit', content: 'Zwischenmiete Juli' },
+        ],
+      }),
+    'Berlin'
+  );
+  assert.equal(mixed.kind, 'live');
+  if (mixed.kind === 'live') {
+    assert.deepEqual(mixed.results, [{ url: 'https://wg-gesucht.de/456', title: 'WG-Zimmer Moabit', content: 'Zwischenmiete Juli' }]);
   }
 });
 
