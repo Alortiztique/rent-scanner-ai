@@ -1,0 +1,31 @@
+// Private Scout Worker. The project owner deploys it manually; see docs/scout-endpoint.md.
+// It has no public entry point: workers.dev and preview URLs are disabled and no route is
+// declared, so it is reachable only through service bindings in the same Cloudflare account.
+// The intended caller is the Pages project's SCOUT_BACKEND binding.
+// Secrets (TAVILY_API_KEY) are set with `wrangler secret put`, never in this file.
+{
+  "name": "rent-scanner-scout",
+  "main": "scout.ts",
+  "compatibility_date": "2026-10-01",
+  // Lets request.signal report a cancelled caller so the provider request is aborted.
+  "compatibility_flags": ["enable_request_signal"],
+  "workers_dev": false,
+  "preview_urls": false,
+  // Native Workers rate limits. Counts are approximate, eventually consistent and separate in
+  // each Cloudflare location. namespace_id values are account-scoped: confirm they are unused
+  // in the deploying account before the first deploy.
+  "ratelimits": [
+    {
+      // Per edge-supplied client address (CF-Connecting-IP).
+      "name": "SCOUT_CLIENT_LIMITER",
+      "namespace_id": "2026021",
+      "simple": { "limit": 5, "period": 60 }
+    },
+    {
+      // All callers together.
+      "name": "SCOUT_GLOBAL_LIMITER",
+      "namespace_id": "2026022",
+      "simple": { "limit": 30, "period": 60 }
+    }
+  ]
+}
