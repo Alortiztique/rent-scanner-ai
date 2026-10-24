@@ -17,20 +17,23 @@ export const DEMO_CANDIDATE_TAG = 'Demo sample';
 export const ALL_CITIES_ID = 'all';
 
 /**
- * live: Tavily answered with a valid payload (results may be empty).
- * demo: no API key configured; one labelled local sample is created instead of a search.
- * unavailable: request failed or the payload was malformed; nothing is substituted.
+ * live: a live search answered with a valid payload (results may be empty).
+ * demo: no live search ran; one labelled local sample is created instead.
+ * unavailable: the request failed or the answer was malformed; nothing is substituted.
  * unsupported: the city string does not resolve to a supported city.
+ * cancelled: the caller cancelled the search before it finished.
  */
-export type TavilyScoutMode = 'live' | 'demo' | 'unavailable' | 'unsupported';
+export type TavilyScoutMode = 'live' | 'demo' | 'unavailable' | 'unsupported' | 'cancelled';
 
 export interface TavilyScoutResult {
   listings: ScoutListing[];
   rawAnswer?: string;
   mode: TavilyScoutMode;
   error?: string;
-  /** The query that was (or, in demo mode, would have been) sent. */
+  /** The effective query that was searched, or would have been in demo mode. */
   query?: string;
+  /** Why demo mode was used: the local demo setting, or the server's explicit demo answer. */
+  demoSource?: 'local' | 'server';
 }
 
 export function isScoutListing(item: RadarListing): item is ScoutListing {
