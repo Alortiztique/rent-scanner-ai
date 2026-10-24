@@ -229,16 +229,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Accepts a provider hit only when its required fields have the right types: an http(s) url,
+ * a non-blank string title, and a string content snippet (which may be empty). Malformed hits
+ * are discarded rather than given a substitute title or snippet.
+ */
 function normalizeHit(raw: unknown): TavilySearchResult | null {
   if (!isRecord(raw)) return null;
-  const url = typeof raw.url === 'string' ? raw.url.trim() : '';
-  if (!isHttpUrl(url)) return null;
-  const title = typeof raw.title === 'string' ? raw.title.trim() : '';
-  const hit: TavilySearchResult = {
-    title: title || formatSourceHost(url),
-    url,
-    content: typeof raw.content === 'string' ? raw.content.trim() : '',
-  };
+  if (typeof raw.url !== 'string' || typeof raw.title !== 'string' || typeof raw.content !== 'string') {
+    return null;
+  }
+  const url = raw.url.trim();
+  const title = raw.title.trim();
+  if (!isHttpUrl(url) || !title) return null;
+  const hit: TavilySearchResult = { title, url, content: raw.content.trim() };
   if (typeof raw.score === 'number' && Number.isFinite(raw.score)) hit.score = raw.score;
   if (typeof raw.published_date === 'string' && raw.published_date.trim()) {
     hit.published_date = raw.published_date.trim();
@@ -247,9 +251,9 @@ function normalizeHit(raw: unknown): TavilySearchResult | null {
 }
 
 /**
- * Validates a Tavily /search payload. Keeps hits with an http(s) link, de-duplicated by URL,
- * capped at maxResults. An empty results list is a successful empty search; a missing list
- * or a non-empty list without any usable hit is malformed.
+ * Validates a Tavily /search payload. Keeps well-formed hits, de-duplicated by URL, capped at
+ * maxResults. An empty results list is a successful empty search; a missing list or a
+ * non-empty list without any well-formed hit is malformed.
  */
 export function parseTavilySearchResponse(
   payload: unknown,
@@ -270,7 +274,10 @@ export function parseTavilySearchResponse(
   }
 
   if (payload.results.length > 0 && results.length === 0) {
-    return { ok: false, error: 'Malformed Tavily response: no result had a usable http(s) link.' };
+    return {
+      ok: false,
+      error: 'Malformed Tavily response: no result had a valid http(s) link, title, and content.',
+    };
   }
 
   const answer = typeof payload.answer === 'string' && payload.answer.trim() ? payload.answer.trim() : undefined;
