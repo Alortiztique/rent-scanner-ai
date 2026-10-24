@@ -1,24 +1,27 @@
 import { useState, useMemo } from 'react';
 import { CITIES } from './data/cities';
 import { MOCK_LISTINGS } from './data/mockListings';
-import type { Listing, FilterState } from './types';
+import type { Listing, FilterState, RadarListing, ScoutListing } from './types';
 import { Header } from './components/Header';
 import { AntiGentrificationBanner } from './components/AntiGentrificationBanner';
 import { CityFilter } from './components/CityFilter';
 import { FilterBar } from './components/FilterBar';
-import { ListingCard } from './components/ListingCard';
+import { ListingCard, ScoutCandidateCard } from './components/ListingCard';
 import { ListingModal } from './components/ListingModal';
 import { TavilyLiveScoutModal } from './components/TavilyLiveScoutModal';
 import { NemotronCopilot } from './components/NemotronCopilot';
 import { TeamCollaborationBanner } from './components/TeamCollaborationBanner';
 import { Footer } from './components/Footer';
 import { callNebiusTokenFactory } from './services/nebius';
+import { mergeScoutCandidates, selectVisibleScoutCandidates } from './services/scoutListings';
 import { RefreshCw, AlertCircle } from 'lucide-react';
 
 export function App() {
   const [selectedCityId, setSelectedCityId] = useState<string>('all');
-  const [listings, setListings] = useState<Listing[]>(MOCK_LISTINGS);
-  const [selectedListing, setSelectedListing] = useState<Listing | null>(null);
+  // Complete, priced rows are the bundled demo fixtures; Scout imports are kept separately.
+  const [listings] = useState<Listing[]>(MOCK_LISTINGS);
+  const [scoutCandidates, setScoutCandidates] = useState<ScoutListing[]>([]);
+  const [selectedListing, setSelectedListing] = useState<RadarListing | null>(null);
   const [isTeamTasksOpen, setIsTeamTasksOpen] = useState(false);
   const [isLiveScoutOpen, setIsLiveScoutOpen] = useState(false);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
@@ -44,8 +47,8 @@ export function App() {
     setFilters((prev) => ({ ...prev, ...newFilters }));
   };
 
-  const handleImportTavilyListings = (newListings: Listing[]) => {
-    setListings((prev) => [...newListings, ...prev]);
+  const handleImportScoutCandidates = (incoming: ScoutListing[]) => {
+    setScoutCandidates((prev) => mergeScoutCandidates(prev, incoming));
   };
 
   // Natural language query router using NVIDIA Nemotron
@@ -152,6 +155,15 @@ Return strictly JSON matching this structure.`,
       });
   }, [listings, selectedCityId, filters]);
 
+  // Search hits have no known price or property facts, so only city and text filters apply.
+  const visibleScoutCandidates = useMemo(
+    () => selectVisibleScoutCandidates(scoutCandidates, { cityId: selectedCityId, searchQuery: filters.searchQuery }),
+    [scoutCandidates, selectedCityId, filters.searchQuery]
+  );
+  const hiddenScoutCandidateCount = scoutCandidates.length - visibleScoutCandidates.length;
+  const visibleDemoCandidateCount = visibleScoutCandidates.filter((c) => c.mode === 'demo').length;
+  const visibleLiveCandidateCount = visibleScoutCandidates.length - visibleDemoCandidateCount;
+
   const currentCityName = useMemo(() => {
     if (selectedCityId === 'all') return 'Global Metropolises';
     return CITIES.find((c) => c.id === selectedCityId)?.name || 'Global';
@@ -193,12 +205,17 @@ Return strictly JSON matching this structure.`,
               RADAR FEED: {currentCityName.toUpperCase()}
             </span>
             <span className="px-2 py-0.5 bg-zinc-900 border border-zinc-800 text-zinc-400">
-              {filteredListings.length} STEALTH OPPORTUNITIES LOCATED
+              {filteredListings.length} DEMO FIXTURE {filteredListings.length === 1 ? 'LISTING' : 'LISTINGS'}
             </span>
+            {scoutCandidates.length > 0 && (
+              <span className="px-2 py-0.5 bg-zinc-900 border border-cyan-900 text-cyan-300">
+                {visibleScoutCandidates.length} UNVERIFIED SEARCH {visibleScoutCandidates.length === 1 ? 'HIT' : 'HITS'}
+              </span>
+            )}
           </div>
 
           <div className="flex items-center gap-3 text-zinc-400">
-            <span>AUDITED BY NVIDIA NEMOTRON</span>
+            <span>SAMPLE AUDITS ON DEMO FIXTURES ONLY</span>
             <span>•</span>
             <button
               onClick={() => {
@@ -223,6 +240,60 @@ Return strictly JSON matching this structure.`,
           </div>
         </div>
 
+        {/* Imported Scout candidates: unpriced and unverified, kept apart from priced rows */}
+        {scoutCandidates.length > 0 && (
+          <section
+            aria-labelledby="scout-candidates-heading"
+            className="mb-8 border border-dashed border-cyan-900/80 bg-cyan-950/10 p-4"
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2 font-mono text-xs">
+              <h2 id="scout-candidates-heading" className="font-bold text-cyan-300 uppercase">
+                Unpriced &amp; unverified search hits ({visibleScoutCandidates.length})
+              </h2>
+              <span className="text-zinc-400 uppercase">
+                {visibleLiveCandidateCount} live · {visibleDemoCandidateCount} demo
+              </span>
+            </div>
+            <p className="text-xs text-zinc-400 font-sans mb-4 max-w-3xl leading-relaxed">
+              Imported from Tavily Scout. Only the title, snippet, and link come from the source: rent, availability,
+              and property details are unknown, and these hits are not deal-scored or audited. City and text search
+              apply here. Budget, deal-score, savings, housing-type, broker-fee, and bills filters and the sort order
+              apply only to the priced demo fixture listings below.
+            </p>
+
+            {visibleScoutCandidates.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {visibleScoutCandidates.map((candidate) => (
+                  <ScoutCandidateCard
+                    key={candidate.id}
+                    candidate={candidate}
+                    onSelect={(item) => setSelectedListing(item)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-zinc-500 font-mono">
+                No imported search hits match the current city or text search.
+              </p>
+            )}
+
+            {hiddenScoutCandidateCount > 0 && (
+              <p className="mt-3 text-[11px] text-zinc-500 font-mono">
+                {hiddenScoutCandidateCount} imported {hiddenScoutCandidateCount === 1 ? 'hit is' : 'hits are'} hidden
+                by the current city or text search.
+              </p>
+            )}
+          </section>
+        )}
+
+        {/* Priced demo fixture listings */}
+        <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-1 mb-3 font-mono text-xs">
+          <h2 className="font-bold text-zinc-200 uppercase">Demo fixture listings ({filteredListings.length})</h2>
+          <span className="text-zinc-500 font-sans">
+            Bundled sample data with illustrative prices, deal scores, and audits. Not live postings.
+          </span>
+        </div>
+
         {/* Listings Grid */}
         {filteredListings.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -238,10 +309,10 @@ Return strictly JSON matching this structure.`,
           <div className="border border-zinc-800 bg-zinc-950 p-12 text-center my-8 font-mono">
             <AlertCircle className="w-8 h-8 text-amber-400 mx-auto mb-3" />
             <h3 className="text-base font-bold text-white uppercase mb-1">
-              NO VERIFIED LISTINGS MATCH CURRENT RADAR PARAMETERS
+              NO DEMO FIXTURE LISTINGS MATCH CURRENT RADAR PARAMETERS
             </h3>
             <p className="text-xs text-zinc-400 max-w-md mx-auto mb-4 font-sans">
-              Try adjusting your maximum budget or unchecking room filters. Alternatively, run the Tavily Live Web Scout to crawl fresh off-market deals in real time!
+              Try adjusting your maximum budget or unchecking room filters. Alternatively, run the Tavily Web Scout to search local listing boards for unverified hits.
             </p>
             <div className="flex justify-center gap-3">
               <button
@@ -280,7 +351,7 @@ Return strictly JSON matching this structure.`,
       <TavilyLiveScoutModal
         isOpen={isLiveScoutOpen}
         onClose={() => setIsLiveScoutOpen(false)}
-        onImportListings={handleImportTavilyListings}
+        onImportListings={handleImportScoutCandidates}
         defaultCity={currentCityName}
       />
 

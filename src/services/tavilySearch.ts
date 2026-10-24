@@ -356,5 +356,5 @@ export async function runTavilyScoutSearch<C extends CityIdentity>(options: {
 
 export function describeDemoResults(cityName: string, count: number): string {
   const noun = count === 1 ? 'sample result' : 'sample results';
-  return `Demo mode: ${count} ${noun} for ${cityName}. No live Tavily search ran because no API key is configured; this is fixture data, not a real posting.`;
+  return `Demo mode: ${count} ${noun} for ${cityName}. A local demo sample was used and no live search ran; it is synthetic text, not a real posting.`;
 }

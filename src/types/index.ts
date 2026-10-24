@@ -56,6 +56,28 @@ export interface Listing {
   verifiedDate: string;
 }
 
+/**
+ * An unverified Tavily Scout candidate. Its facts come only from the selected city and an
+ * accepted provider hit (title, link, snippet), or from an explicitly labelled demo sample.
+ * It deliberately has no rent, currency, median, savings, deal score, property facts,
+ * availability, verification date, image, or audit.
+ */
+export interface ScoutListing {
+  kind: 'scout';
+  mode: 'live' | 'demo';
+  id: string;
+  title: string;
+  cityId: string;
+  cityName: string;
+  source: 'Tavily Web Scout';
+  sourceUrl: string;
+  description: string;
+  tags: string[];
+}
+
+/** A complete fixture Listing or an unverified ScoutListing, for consumers that show both. */
+export type RadarListing = Listing | ScoutListing;
+
 export interface FilterState {
   cityId: string;
   maxPriceUsd: number;

@@ -286,7 +286,7 @@ test('no-key and placeholder-key searches are demo mode and make no request', as
 
   assert.equal(
     describeDemoResults('Berlin', 1),
-    'Demo mode: 1 sample result for Berlin. No live Tavily search ran because no API key is configured; this is fixture data, not a real posting.'
+    'Demo mode: 1 sample result for Berlin. A local demo sample was used and no live search ran; it is synthetic text, not a real posting.'
   );
   assert.match(describeDemoResults('Tokyo', 2), /^Demo mode: 2 sample results for Tokyo\./);
 });

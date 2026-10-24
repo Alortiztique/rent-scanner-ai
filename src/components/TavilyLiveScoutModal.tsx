@@ -1,7 +1,7 @@
-import React, { useRef, useState } from 'react';
-import type { Listing } from '../types';
+import React, { useEffect, useRef, useState } from 'react';
+import type { ScoutListing } from '../types';
 import { CITIES } from '../data/cities';
-import { searchLiveSubletsWithTavily, type TavilyScoutResult } from '../services/tavily';
+import { scoutModeSetting, searchLiveSubletsWithTavily, type TavilyScoutResult } from '../services/tavily';
 import {
   formatSourceHost,
   getCitySearchProfile,
@@ -13,7 +13,7 @@ import { Globe, Search, Plus, ExternalLink, X, Zap, TriangleAlert, FlaskConical 
 interface TavilyLiveScoutModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onImportListings: (listings: Listing[]) => void;
+  onImportListings: (candidates: ScoutListing[]) => void;
   defaultCity: string;
 }
 
@@ -43,6 +43,15 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
   const [customQuery, setCustomQuery] = useState('');
   const [search, setSearch] = useState<ScoutState>({ status: 'idle' });
   const requestSeq = useRef(0);
+  const inFlight = useRef<AbortController | null>(null);
+
+  const cancelInFlight = () => {
+    inFlight.current?.abort();
+    inFlight.current = null;
+  };
+
+  // Closing the Scout unmounts this dialog; cancel any search that is still running.
+  useEffect(() => cancelInFlight, []);
 
   const city = SCOUT_CITIES.find((c) => c.id === cityId);
   const profile = city ? getCitySearchProfile(city.id) : undefined;
@@ -57,6 +66,7 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
 
   const handleCityChange = (nextCityId: string) => {
     requestSeq.current += 1; // invalidate any in-flight response for the previous city
+    cancelInFlight();
     setCityId(nextCityId);
     setSearch({ status: 'idle' });
   };
@@ -64,16 +74,20 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
   const handleExecuteSearch = async () => {
     if (!city || isLoading) return;
     const requestId = ++requestSeq.current;
+    cancelInFlight();
+    const controller = new AbortController();
+    inFlight.current = controller;
     const target = { id: city.id, name: city.name };
     setSearch({ status: 'loading', cityId: target.id, cityName: target.name });
 
     let next: TavilyScoutResult;
     try {
-      next = await searchLiveSubletsWithTavily(target.name, customQuery);
-    } catch (err) {
-      console.error('Tavily search failure:', err);
+      next = await searchLiveSubletsWithTavily(target.name, customQuery, { signal: controller.signal });
+    } catch {
+      console.error('[Scout] search failed unexpectedly.');
       next = { listings: [], mode: 'unavailable', error: 'Scout search failed unexpectedly.' };
     }
+    if (inFlight.current === controller) inFlight.current = null;
 
     if (requestId !== requestSeq.current) return; // a newer search or city change superseded this one
     setSearch({ status: 'done', cityId: target.id, cityName: target.name, result: next });
@@ -98,7 +112,7 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
     if (isLoading) {
       return (
         <div className="p-8 text-center border border-zinc-900 bg-zinc-900/30 text-xs text-cyan-400 animate-pulse">
-          SEARCHING {domains.toUpperCase()} FOR {cityName.toUpperCase()} VIA TAVILY API...
+          SEARCHING {domains.toUpperCase()} FOR {cityName.toUpperCase()} VIA THIS SITE'S SCOUT SERVER...
         </div>
       );
     }
@@ -106,7 +120,11 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
     if (!result) {
       return (
         <div className="p-8 text-center border border-zinc-900 bg-zinc-900/30 text-xs text-zinc-500">
-          No search has run yet. Click "RUN SCOUT" to search {domains} for {city.name}.
+          {!scoutModeSetting.ok
+            ? 'Scout is misconfigured: VITE_SCOUT_MODE must be "demo" or "server". Searches will not run.'
+            : scoutModeSetting.mode === 'demo'
+              ? `No search has run yet. Local demo mode: "RUN SCOUT" shows a labelled sample for ${city.name} and sends no request.`
+              : `No search has run yet. Click "RUN SCOUT" to search ${domains} for ${city.name}.`}
         </div>
       );
     }
@@ -118,18 +136,27 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
           <div>
             <span className="font-bold block mb-1 uppercase">Demo mode — not a live search</span>
             <p className="font-sans leading-relaxed">{result.rawAnswer}</p>
+            <p className="font-sans leading-relaxed text-amber-200/80 mt-1">
+              {result.demoSource === 'server'
+                ? "This site's Scout server answered in demo mode, so it has no live search enabled."
+                : 'This build uses local demo mode, so no search request was sent.'}
+            </p>
           </div>
         </div>
       );
     }
 
-    if (result.mode === 'unavailable' || result.mode === 'unsupported') {
+    if (result.mode === 'unavailable' || result.mode === 'unsupported' || result.mode === 'cancelled') {
       return (
         <div className="p-3 border border-red-800 bg-red-950/30 text-xs text-red-200 flex gap-2">
           <TriangleAlert className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
           <div>
             <span className="font-bold block mb-1 uppercase">
-              {result.mode === 'unsupported' ? 'Unsupported city' : 'Search unavailable'}
+              {result.mode === 'unsupported'
+                ? 'Unsupported city'
+                : result.mode === 'cancelled'
+                  ? 'Search cancelled'
+                  : 'Search unavailable'}
             </span>
             <p className="font-sans leading-relaxed">{result.error}</p>
             <p className="font-sans leading-relaxed text-red-300/80 mt-1">
@@ -176,10 +203,12 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
             </span>
           </div>
           <button
+            type="button"
             onClick={onClose}
+            aria-label="Close Tavily Scout"
             className="p-1 hover:bg-zinc-800 text-zinc-400 hover:text-white transition cursor-pointer"
           >
-            <X className="w-5 h-5" />
+            <X className="w-5 h-5" aria-hidden="true" />
           </button>
         </div>
 
@@ -262,7 +291,11 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
 
           {result?.query && (
             <p className="text-[11px] text-zinc-500">
-              {result.mode === 'demo' ? 'Query (not sent in demo mode): ' : 'Query sent: '}
+              {result.mode !== 'demo'
+                ? 'Query searched: '
+                : result.demoSource === 'server'
+                  ? 'Query (server demo mode, not searched): '
+                  : 'Query (local demo, not sent): '}
               <code className="text-zinc-300 break-words">{result.query}</code>
             </p>
           )}
@@ -282,19 +315,25 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
             <div>
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2">
                 <span className="text-xs font-bold text-zinc-300 uppercase">
-                  {result.mode === 'demo' ? 'DEMO FIXTURE RESULTS' : 'SEARCH HITS'} ({results.length})
+                  {result.mode === 'demo' ? 'DEMO SAMPLE' : 'SEARCH HITS'} ({results.length})
                 </span>
                 <button
+                  type="button"
                   onClick={handleImportAll}
                   className="text-xs text-emerald-400 hover:underline flex items-center gap-1 cursor-pointer font-bold"
                 >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>IMPORT INTO RADAR</span>
+                  <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>
+                    {result.mode === 'demo'
+                      ? 'IMPORT DEMO SAMPLE INTO RADAR'
+                      : `IMPORT ${results.length} ${results.length === 1 ? 'HIT' : 'HITS'} INTO RADAR`}
+                  </span>
                 </button>
               </div>
               <p className="text-[10px] text-zinc-500 mb-2 font-sans">
-                Imported cards use legacy placeholder price, score, and audit values that do not come from the
-                source.
+                {result.mode === 'demo'
+                  ? 'Imported demo samples stay labelled Demo in the Radar. They are not real postings.'
+                  : 'Imported hits appear in the Radar as unverified search hits, without price, availability, property details, deal score, or audit.'}
               </p>
 
               <div className="space-y-3">
@@ -305,7 +344,7 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
                   >
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
-                        {result.mode === 'demo' ? (
+                        {item.mode === 'demo' ? (
                           <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-950 text-amber-300 border border-amber-700 uppercase">
                             DEMO
                           </span>
@@ -327,11 +366,16 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
                         href={item.sourceUrl}
                         target="_blank"
                         rel="noopener noreferrer"
+                        aria-label={
+                          item.mode === 'demo'
+                            ? `Open demo source site ${formatSourceHost(item.sourceUrl)} (opens in a new tab)`
+                            : `Open original source for "${item.title}" on ${formatSourceHost(item.sourceUrl)} (opens in a new tab)`
+                        }
                         className="px-2 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 transition flex items-center gap-1 text-[10px] font-bold uppercase"
                         title={item.sourceUrl}
                       >
-                        <span>{result.mode === 'demo' ? 'Source site' : 'Open source'}</span>
-                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>{item.mode === 'demo' ? 'Source site' : 'Open source'}</span>
+                        <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
                       </a>
                     </div>
                   </div>
@@ -344,9 +388,19 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
         {/* Footer */}
         <div className="p-4 bg-zinc-900 border-t border-zinc-800 flex items-center justify-between">
           <span className="text-[11px] text-zinc-500">
-            Endpoint: <code className="text-zinc-400">https://api.tavily.com/search</code>
+            {!scoutModeSetting.ok ? (
+              'Scout mode setting is invalid; no searches run.'
+            ) : scoutModeSetting.mode === 'demo' ? (
+              'Local demo mode: synthetic samples, no network request.'
+            ) : (
+              <>
+                Up to 5 unverified hits{domains ? ` from ${domains}` : ''}, via this site's{' '}
+                <code className="text-zinc-400">/api/scout</code>
+              </>
+            )}
           </span>
           <button
+            type="button"
             onClick={onClose}
             className="px-4 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold uppercase transition cursor-pointer"
           >
