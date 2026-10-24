@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import type { Listing } from '../types';
+import type { ScoutListing } from '../types';
 import { CITIES } from '../data/cities';
 import { searchLiveSubletsWithTavily, type TavilyScoutResult } from '../services/tavily';
 import {
@@ -13,7 +13,7 @@ import { Globe, Search, Plus, ExternalLink, X, Zap, TriangleAlert, FlaskConical 
 interface TavilyLiveScoutModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onImportListings: (listings: Listing[]) => void;
+  onImportListings: (candidates: ScoutListing[]) => void;
   defaultCity: string;
 }
 
@@ -176,10 +176,12 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
             </span>
           </div>
           <button
+            type="button"
             onClick={onClose}
+            aria-label="Close Tavily Scout"
             className="p-1 hover:bg-zinc-800 text-zinc-400 hover:text-white transition cursor-pointer"
           >
-            <X className="w-5 h-5" />
+            <X className="w-5 h-5" aria-hidden="true" />
           </button>
         </div>
 
@@ -282,19 +284,25 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
             <div>
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2">
                 <span className="text-xs font-bold text-zinc-300 uppercase">
-                  {result.mode === 'demo' ? 'DEMO FIXTURE RESULTS' : 'SEARCH HITS'} ({results.length})
+                  {result.mode === 'demo' ? 'DEMO SAMPLE' : 'SEARCH HITS'} ({results.length})
                 </span>
                 <button
+                  type="button"
                   onClick={handleImportAll}
                   className="text-xs text-emerald-400 hover:underline flex items-center gap-1 cursor-pointer font-bold"
                 >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>IMPORT INTO RADAR</span>
+                  <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>
+                    {result.mode === 'demo'
+                      ? 'IMPORT DEMO SAMPLE INTO RADAR'
+                      : `IMPORT ${results.length} ${results.length === 1 ? 'HIT' : 'HITS'} INTO RADAR`}
+                  </span>
                 </button>
               </div>
               <p className="text-[10px] text-zinc-500 mb-2 font-sans">
-                Imported cards use legacy placeholder price, score, and audit values that do not come from the
-                source.
+                {result.mode === 'demo'
+                  ? 'Imported demo samples stay labelled Demo in the Radar. They are not real postings.'
+                  : 'Imported hits appear in the Radar as unverified search hits, without price, availability, property details, deal score, or audit.'}
               </p>
 
               <div className="space-y-3">
@@ -305,7 +313,7 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
                   >
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
-                        {result.mode === 'demo' ? (
+                        {item.mode === 'demo' ? (
                           <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-950 text-amber-300 border border-amber-700 uppercase">
                             DEMO
                           </span>
@@ -327,11 +335,16 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
                         href={item.sourceUrl}
                         target="_blank"
                         rel="noopener noreferrer"
+                        aria-label={
+                          item.mode === 'demo'
+                            ? `Open demo source site ${formatSourceHost(item.sourceUrl)} (opens in a new tab)`
+                            : `Open original source for "${item.title}" on ${formatSourceHost(item.sourceUrl)} (opens in a new tab)`
+                        }
                         className="px-2 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 transition flex items-center gap-1 text-[10px] font-bold uppercase"
                         title={item.sourceUrl}
                       >
-                        <span>{result.mode === 'demo' ? 'Source site' : 'Open source'}</span>
-                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>{item.mode === 'demo' ? 'Source site' : 'Open source'}</span>
+                        <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
                       </a>
                     </div>
                   </div>
@@ -347,6 +360,7 @@ const TavilyScoutDialog: React.FC<Omit<TavilyLiveScoutModalProps, 'isOpen'>> = (
             Endpoint: <code className="text-zinc-400">https://api.tavily.com/search</code>
           </span>
           <button
+            type="button"
             onClick={onClose}
             className="px-4 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold uppercase transition cursor-pointer"
           >

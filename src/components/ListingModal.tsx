@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
-import { Listing } from '../types';
+import React, { useEffect, useRef, useState } from 'react';
+import type { Listing, RadarListing, ScoutListing } from '../types';
 import { formatCurrency, formatUsd } from '../utils/formatters';
 import { auditListingWithNemotron } from '../services/nebius';
+import { isScoutListing } from '../services/scoutListings';
+import { formatSourceHost } from '../services/tavilySearch';
 import {
   X,
   ShieldCheck,
@@ -15,20 +17,173 @@ import {
   Cpu,
   FileText,
   AlertTriangle,
+  FlaskConical,
+  SearchCheck,
 } from 'lucide-react';
 
 interface ListingModalProps {
-  listing: Listing | null;
+  listing: RadarListing | null;
   onClose: () => void;
 }
 
+/**
+ * Each selection mounts a fresh details view keyed by its id, so an audit, clause text, or
+ * copy state from an earlier selection (including a late re-audit reply) cannot carry over.
+ * Scout candidates get a separate view that has no audit, model attribution, or script.
+ */
 export const ListingModal: React.FC<ListingModalProps> = ({ listing, onClose }) => {
+  if (!listing) return null;
+  if (isScoutListing(listing)) {
+    return <ScoutCandidateDetails key={listing.id} candidate={listing} onClose={onClose} />;
+  }
+  return <FixtureDossier key={listing.id} listing={listing} onClose={onClose} />;
+};
+
+function useInitialFocus<T extends HTMLElement>() {
+  const ref = useRef<T>(null);
+  useEffect(() => {
+    ref.current?.focus();
+  }, []);
+  return ref;
+}
+
+const ScoutCandidateDetails: React.FC<{ candidate: ScoutListing; onClose: () => void }> = ({
+  candidate,
+  onClose,
+}) => {
+  const closeRef = useInitialFocus<HTMLButtonElement>();
+  const isDemo = candidate.mode === 'demo';
+  const host = formatSourceHost(candidate.sourceUrl);
+  const headingId = 'scout-candidate-details-title';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/85 backdrop-blur-sm overflow-y-auto">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={headingId}
+        className="relative w-full max-w-2xl bg-zinc-950 border-2 border-cyan-900 shadow-[8px_8px_0px_0px_#164e63] my-8 overflow-hidden font-mono"
+      >
+        <div className="flex items-center justify-between px-4 py-3 bg-zinc-900 border-b border-zinc-800">
+          <span className="text-xs font-bold text-zinc-200 tracking-wider uppercase">
+            RENTSCANNER // {isDemo ? 'DEMO SAMPLE' : 'UNVERIFIED SEARCH HIT'}
+          </span>
+          <button
+            ref={closeRef}
+            type="button"
+            onClick={onClose}
+            aria-label="Close search hit details"
+            className="p-1 hover:bg-zinc-800 text-zinc-400 hover:text-white transition cursor-pointer"
+          >
+            <X className="w-5 h-5" aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="p-4 sm:p-6 max-h-[80vh] overflow-y-auto space-y-5">
+          <div className="flex flex-wrap items-center gap-1.5 text-[10px] uppercase">
+            {isDemo ? (
+              <span className="px-1.5 py-0.5 bg-amber-950 text-amber-300 border border-amber-700 font-bold flex items-center gap-1">
+                <FlaskConical className="w-3 h-3" aria-hidden="true" />
+                Demo sample
+              </span>
+            ) : (
+              <span className="px-1.5 py-0.5 bg-zinc-800 text-zinc-200 border border-zinc-600 font-bold flex items-center gap-1">
+                <SearchCheck className="w-3 h-3" aria-hidden="true" />
+                Unverified search hit
+              </span>
+            )}
+            <span className="px-1.5 py-0.5 bg-zinc-900 text-zinc-400 border border-zinc-800">{candidate.source}</span>
+          </div>
+
+          <div>
+            <div className="text-xs text-zinc-400 uppercase mb-1">
+              {candidate.cityName} · {host}
+            </div>
+            <h2 id={headingId} className="text-base sm:text-lg font-bold text-white leading-snug break-words">
+              {candidate.title}
+            </h2>
+          </div>
+
+          <div
+            className={`p-3 border text-xs font-sans leading-relaxed ${
+              isDemo ? 'border-amber-800 bg-amber-950/30 text-amber-100' : 'border-zinc-700 bg-zinc-900/70 text-zinc-200'
+            }`}
+          >
+            {isDemo ? (
+              <>
+                This demo sample was created locally because no search backend is configured. Its text is
+                synthetic and it is not a real posting. The link opens the {host} homepage, not a listing.
+              </>
+            ) : (
+              <>
+                Only the title, snippet, and link come from the source. Rent, availability, and property details
+                are unknown, and this hit has not been deal-scored or audited. Check everything on the original
+                source before contacting anyone.
+              </>
+            )}
+          </div>
+
+          <div className="p-4 bg-zinc-900/40 border border-zinc-800">
+            <h3 className="text-xs font-bold text-zinc-300 uppercase mb-2 flex items-center gap-1.5">
+              <FileText className="w-3.5 h-3.5 text-zinc-400" aria-hidden="true" />
+              {isDemo ? 'SAMPLE TEXT' : 'SOURCE SNIPPET'}
+            </h3>
+            <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed whitespace-pre-line font-sans break-words">
+              {candidate.description || 'The source returned no snippet.'}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-1.5">
+            {candidate.tags.map((tag) => (
+              <span
+                key={tag}
+                className="px-2 py-0.5 bg-zinc-900 border border-zinc-800 text-zinc-300 text-[10px] uppercase font-bold"
+              >
+                #{tag}
+              </span>
+            ))}
+          </div>
+
+          <div className="pt-3 border-t border-zinc-900 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <span className="text-xs text-zinc-500 break-all">{candidate.sourceUrl}</span>
+            <a
+              href={candidate.sourceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={
+                isDemo
+                  ? `Open demo source site ${host} (opens in a new tab)`
+                  : `Open original source for "${candidate.title}" on ${host} (opens in a new tab)`
+              }
+              className="px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs text-zinc-200 flex items-center gap-1.5 transition cursor-pointer shrink-0"
+            >
+              <span>{isDemo ? 'OPEN DEMO SOURCE SITE' : 'OPEN ORIGINAL SOURCE'}</span>
+              <ExternalLink className="w-3.5 h-3.5 text-zinc-400" aria-hidden="true" />
+            </a>
+          </div>
+        </div>
+
+        <div className="p-4 bg-zinc-900 border-t border-zinc-800 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold uppercase transition cursor-pointer"
+          >
+            CLOSE
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const FixtureDossier: React.FC<{ listing: Listing; onClose: () => void }> = ({ listing, onClose }) => {
+  const closeRef = useInitialFocus<HTMLButtonElement>();
   const [copied, setCopied] = useState(false);
   const [customClause, setCustomClause] = useState('');
   const [isAuditing, setIsAuditing] = useState(false);
-  const [currentAudit, setCurrentAudit] = useState(listing?.nemotronAudit);
-
-  if (!listing) return null;
+  const [currentAudit, setCurrentAudit] = useState(listing.nemotronAudit);
+  const headingId = 'fixture-dossier-title';
 
   const handleCopyNegotiation = () => {
     const textToCopy = currentAudit?.negotiationScript || listing.nemotronAudit.negotiationScript;
@@ -54,25 +209,39 @@ export const ListingModal: React.FC<ListingModalProps> = ({ listing, onClose }) 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/85 backdrop-blur-sm overflow-y-auto">
-      <div className="relative w-full max-w-4xl bg-zinc-950 border-2 border-zinc-700 shadow-[8px_8px_0px_0px_#18181b] my-8 overflow-hidden font-mono">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={headingId}
+        className="relative w-full max-w-4xl bg-zinc-950 border-2 border-zinc-700 shadow-[8px_8px_0px_0px_#18181b] my-8 overflow-hidden font-mono"
+      >
         {/* Top Header Bar */}
         <div className="flex items-center justify-between px-4 py-3 bg-zinc-900 border-b border-zinc-800">
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 bg-emerald-500"></span>
             <span className="text-xs font-bold text-zinc-200 tracking-wider uppercase">
-              RENTSCANNER // INTELLIGENCE DOSSIER #{listing.id}
+              RENTSCANNER // DEMO FIXTURE DOSSIER #{listing.id}
             </span>
           </div>
           <button
+            ref={closeRef}
+            type="button"
             onClick={onClose}
+            aria-label="Close listing dossier"
             className="p-1 hover:bg-zinc-800 text-zinc-400 hover:text-white transition cursor-pointer"
           >
-            <X className="w-5 h-5" />
+            <X className="w-5 h-5" aria-hidden="true" />
           </button>
         </div>
 
         {/* Modal Scrollable Body */}
         <div className="p-4 sm:p-6 max-h-[80vh] overflow-y-auto space-y-6">
+          <div className="p-3 border border-amber-800 bg-amber-950/30 text-xs text-amber-100 font-sans leading-relaxed">
+            <strong className="font-mono uppercase text-amber-300">Demo fixture: </strong>
+            bundled sample listing. Its price, median, deal score, availability, and audit are illustrative
+            sample values, not a live posting.
+          </div>
+
           {/* Main Visual & Title Grid */}
           <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
             <div className="md:col-span-6">
@@ -105,7 +274,7 @@ export const ListingModal: React.FC<ListingModalProps> = ({ listing, onClose }) 
                 <div className="text-xs text-zinc-400 uppercase mb-1">
                   {listing.neighborhood}, {listing.cityName}
                 </div>
-                <h2 className="text-base sm:text-lg font-bold text-white leading-snug">
+                <h2 id={headingId} className="text-base sm:text-lg font-bold text-white leading-snug">
                   {listing.title}
                 </h2>
 

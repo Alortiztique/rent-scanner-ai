@@ -1,7 +1,20 @@
 import React from 'react';
-import { Listing } from '../types';
+import type { Listing, ScoutListing } from '../types';
 import { formatCurrency, formatUsd } from '../utils/formatters';
-import { ShieldCheck, ShieldAlert, Sparkles, ExternalLink, Calendar, MapPin, Bed, Bath, Maximize } from 'lucide-react';
+import { formatSourceHost } from '../services/tavilySearch';
+import {
+  ShieldCheck,
+  ShieldAlert,
+  Sparkles,
+  ExternalLink,
+  Calendar,
+  MapPin,
+  Bed,
+  Bath,
+  Maximize,
+  FlaskConical,
+  SearchCheck,
+} from 'lucide-react';
 
 interface ListingCardProps {
   listing: Listing;
@@ -58,6 +71,13 @@ export const ListingCard: React.FC<ListingCardProps> = ({ listing, onSelect }) =
 
         {/* Content Body */}
         <div className="p-4">
+          {/* Complete Listing rows are the bundled demonstration fixtures (src/data/mockListings.ts). */}
+          <div className="mb-2 font-mono text-[10px] uppercase">
+            <span className="px-1.5 py-0.5 bg-amber-950/60 text-amber-300 border border-amber-800 font-bold">
+              Demo fixture · sample data
+            </span>
+          </div>
+
           {/* Location & Typology */}
           <div className="flex items-center justify-between text-xs font-mono text-zinc-400 mb-1">
             <span className="flex items-center gap-1 text-zinc-300 truncate font-semibold">
@@ -155,5 +175,90 @@ export const ListingCard: React.FC<ListingCardProps> = ({ listing, onSelect }) =
         </a>
       </div>
     </div>
+  );
+};
+
+interface ScoutCandidateCardProps {
+  candidate: ScoutListing;
+  onSelect: (candidate: ScoutListing) => void;
+}
+
+/**
+ * Card for an unverified Scout candidate. It shows only the source title, snippet, link, and
+ * selected city: no price, image, property facts, deal score, or audit.
+ */
+export const ScoutCandidateCard: React.FC<ScoutCandidateCardProps> = ({ candidate, onSelect }) => {
+  const isDemo = candidate.mode === 'demo';
+  const host = formatSourceHost(candidate.sourceUrl);
+  const kindLabel = isDemo ? 'demo sample' : 'search hit';
+
+  return (
+    <article
+      aria-label={`${isDemo ? 'Demo sample' : 'Unverified search hit'}: ${candidate.title}`}
+      className="border border-dashed border-cyan-900 bg-zinc-950/80 hover:border-cyan-700 transition flex flex-col justify-between"
+    >
+      <div className="p-4">
+        <div className="flex flex-wrap items-center gap-1.5 mb-2 font-mono text-[10px] uppercase">
+          {isDemo ? (
+            <span className="px-1.5 py-0.5 bg-amber-950 text-amber-300 border border-amber-700 font-bold flex items-center gap-1">
+              <FlaskConical className="w-3 h-3" aria-hidden="true" />
+              Demo sample
+            </span>
+          ) : (
+            <span className="px-1.5 py-0.5 bg-zinc-800 text-zinc-200 border border-zinc-600 font-bold flex items-center gap-1">
+              <SearchCheck className="w-3 h-3" aria-hidden="true" />
+              Unverified search hit
+            </span>
+          )}
+          <span className="px-1.5 py-0.5 bg-zinc-900 text-zinc-400 border border-zinc-800">{candidate.source}</span>
+        </div>
+
+        <div className="flex items-center gap-1 text-xs font-mono text-zinc-400 min-w-0">
+          <MapPin className="w-3.5 h-3.5 text-cyan-400 shrink-0" aria-hidden="true" />
+          <span className="truncate">
+            {candidate.cityName} · {host}
+          </span>
+        </div>
+
+        <h3 className="text-sm font-bold font-mono text-zinc-100 line-clamp-3 mt-1 leading-snug break-words">
+          {candidate.title}
+        </h3>
+
+        <p className="text-xs text-zinc-400 font-sans line-clamp-4 mt-2 break-words">
+          {candidate.description || 'The source returned no snippet.'}
+        </p>
+
+        <p className="mt-3 text-[10px] font-mono text-zinc-500">
+          {isDemo
+            ? 'Created locally because no search backend is configured. No search ran.'
+            : 'Price, availability, and property details unknown. Not deal-scored or audited.'}
+        </p>
+      </div>
+
+      <div className="p-4 pt-0 grid grid-cols-2 gap-2 font-mono text-xs">
+        <button
+          type="button"
+          onClick={() => onSelect(candidate)}
+          aria-label={`View details for ${kindLabel} "${candidate.title}"`}
+          className="w-full py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 border border-zinc-600 font-bold uppercase transition cursor-pointer"
+        >
+          VIEW DETAILS
+        </button>
+        <a
+          href={candidate.sourceUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={
+            isDemo
+              ? `Open demo source site ${host} (opens in a new tab)`
+              : `Open original source for "${candidate.title}" on ${host} (opens in a new tab)`
+          }
+          className="w-full py-2 bg-zinc-900 hover:bg-zinc-850 text-zinc-300 border border-zinc-700 hover:border-zinc-500 transition flex items-center justify-center gap-1 text-center cursor-pointer"
+        >
+          <span>{isDemo ? 'SOURCE SITE' : 'OPEN SOURCE'}</span>
+          <ExternalLink className="w-3 h-3 text-zinc-500" aria-hidden="true" />
+        </a>
+      </div>
+    </article>
   );
 };
