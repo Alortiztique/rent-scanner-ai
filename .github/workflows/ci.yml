@@ -48,6 +48,9 @@ jobs:
       - name: Install dependencies from lockfile
         run: npm ci
 
+      - name: Run offline Scout search check
+        run: node --experimental-strip-types --test tests/tavily-search.test.ts
+
       - name: Lint
         run: npm run lint
 
