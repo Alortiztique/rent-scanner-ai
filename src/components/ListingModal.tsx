@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useLayoutEffect, useRef, useState } from 'react';
 import type { Listing, RadarListing, ScoutListing } from '../types';
 import { formatCurrency, formatUsd } from '../utils/formatters';
 import { auditListingWithNemotron } from '../services/nebius';
@@ -39,31 +39,64 @@ export const ListingModal: React.FC<ListingModalProps> = ({ listing, onClose }) 
   return <FixtureDossier key={listing.id} listing={listing} onClose={onClose} />;
 };
 
-function useInitialFocus<T extends HTMLElement>() {
-  const ref = useRef<T>(null);
-  useEffect(() => {
-    ref.current?.focus();
+/**
+ * Shows a details view as a native modal dialog. showModal() makes the rest of the page inert,
+ * so Tab and Shift+Tab cannot reach covered Radar controls, and Escape closes it natively.
+ * A native close reports through onClose so React clears the selection. Closing by button
+ * unmounts the view instead; cleanup then closes the dialog and refocuses the control that
+ * opened it.
+ */
+function useModalDialog(onClose: () => void) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const initialFocusRef = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(onClose);
+
+  useLayoutEffect(() => {
+    onCloseRef.current = onClose;
+  });
+
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog || !dialog.isConnected) return;
+    const active = document.activeElement;
+    const opener = active instanceof HTMLElement && active !== document.body && !dialog.contains(active) ? active : null;
+
+    // The close event is queued, so one from an earlier setup can arrive after the dialog was
+    // reopened (for example on a remount). Only a dialog that is actually closed reports it.
+    const handleClose = () => {
+      if (!dialog.open) onCloseRef.current();
+    };
+    dialog.addEventListener('close', handleClose);
+    if (!dialog.open) dialog.showModal();
+    initialFocusRef.current?.focus();
+
+    return () => {
+      dialog.removeEventListener('close', handleClose);
+      if (dialog.open) dialog.close();
+      if (opener?.isConnected) opener.focus();
+    };
   }, []);
-  return ref;
+
+  return { dialogRef, initialFocusRef };
 }
+
+// Fills the viewport and centers the panel like the former overlay; ::backdrop dims the page.
+// Display is set only while open so the user agent's closed-dialog hiding still applies.
+const DIALOG_CLASS =
+  'fixed inset-0 m-0 h-full max-h-none w-full max-w-none open:flex items-center justify-center p-3 sm:p-6 bg-transparent text-zinc-100 overflow-y-auto backdrop:bg-black/85 backdrop:backdrop-blur-sm';
 
 const ScoutCandidateDetails: React.FC<{ candidate: ScoutListing; onClose: () => void }> = ({
   candidate,
   onClose,
 }) => {
-  const closeRef = useInitialFocus<HTMLButtonElement>();
+  const { dialogRef, initialFocusRef: closeRef } = useModalDialog(onClose);
   const isDemo = candidate.mode === 'demo';
   const host = formatSourceHost(candidate.sourceUrl);
   const headingId = 'scout-candidate-details-title';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/85 backdrop-blur-sm overflow-y-auto">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={headingId}
-        className="relative w-full max-w-2xl bg-zinc-950 border-2 border-cyan-900 shadow-[8px_8px_0px_0px_#164e63] my-8 overflow-hidden font-mono"
-      >
+    <dialog ref={dialogRef} aria-labelledby={headingId} className={DIALOG_CLASS}>
+      <div className="relative w-full max-w-2xl bg-zinc-950 border-2 border-cyan-900 shadow-[8px_8px_0px_0px_#164e63] my-8 overflow-hidden font-mono">
         <div className="flex items-center justify-between px-4 py-3 bg-zinc-900 border-b border-zinc-800">
           <span className="text-xs font-bold text-zinc-200 tracking-wider uppercase">
             RENTSCANNER // {isDemo ? 'DEMO SAMPLE' : 'UNVERIFIED SEARCH HIT'}
@@ -173,12 +206,12 @@ const ScoutCandidateDetails: React.FC<{ candidate: ScoutListing; onClose: () => 
           </button>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 };
 
 const FixtureDossier: React.FC<{ listing: Listing; onClose: () => void }> = ({ listing, onClose }) => {
-  const closeRef = useInitialFocus<HTMLButtonElement>();
+  const { dialogRef, initialFocusRef: closeRef } = useModalDialog(onClose);
   const [copied, setCopied] = useState(false);
   const [customClause, setCustomClause] = useState('');
   const [isAuditing, setIsAuditing] = useState(false);
@@ -208,13 +241,8 @@ const FixtureDossier: React.FC<{ listing: Listing; onClose: () => void }> = ({ l
   const activeAudit = currentAudit || listing.nemotronAudit;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/85 backdrop-blur-sm overflow-y-auto">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={headingId}
-        className="relative w-full max-w-4xl bg-zinc-950 border-2 border-zinc-700 shadow-[8px_8px_0px_0px_#18181b] my-8 overflow-hidden font-mono"
-      >
+    <dialog ref={dialogRef} aria-labelledby={headingId} className={DIALOG_CLASS}>
+      <div className="relative w-full max-w-4xl bg-zinc-950 border-2 border-zinc-700 shadow-[8px_8px_0px_0px_#18181b] my-8 overflow-hidden font-mono">
         {/* Top Header Bar */}
         <div className="flex items-center justify-between px-4 py-3 bg-zinc-900 border-b border-zinc-800">
           <div className="flex items-center gap-2">
@@ -476,6 +504,6 @@ const FixtureDossier: React.FC<{ listing: Listing; onClose: () => void }> = ({ l
           </button>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 };
