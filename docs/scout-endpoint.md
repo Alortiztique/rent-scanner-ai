@@ -101,10 +101,6 @@ provider response text or stack traces. None of the error cases fall back to dem
     ID shares its counters.
 
   To cap spending, use the provider account's own limits.
-- **Query length:** the contract allows `customQuery` up to 500 characters, and the city name
-  may be added in front. Tavily's guidance is to keep queries under 400 characters. A longer
-  query that Tavily rejects comes back as a 502, and it has already used up rate-limit
-  allowance.
 - **Logs** contain only fixed event names, such as `{"scout":"provider_timeout"}`, and for
   provider HTTP errors the status code.
 
