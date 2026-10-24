@@ -37,6 +37,7 @@ jobs:
             *) echo "::error::Expected an npm packageManager declaration, got '$npm_spec'"; exit 1 ;;
           esac
           npm install --global --no-audit --no-fund "$npm_spec"
+          hash -r
           actual="$(npm --version)"
           if [ "$actual" != "${npm_spec#npm@}" ]; then
             echo "::error::Expected npm ${npm_spec#npm@}, got $actual"
