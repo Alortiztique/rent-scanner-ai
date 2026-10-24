@@ -111,8 +111,14 @@ Edit `.env` with your API credentials (optional for testing; the app includes a 
 VITE_NEBIUS_API_KEY=your_nebius_api_key_here
 VITE_NEBIUS_BASE_URL=https://api.tokenfactory.nebius.com/v1
 VITE_NEBIUS_REASONING_MODEL=nvidia/llama-3.1-nemotron-70b-instruct
-VITE_TAVILY_API_KEY=your_tavily_api_key_here
 ```
+
+**Tavily key:** do not put it in `.env` or in any `VITE_` variable. That includes the old
+`VITE_TAVILY_API_KEY`, because Vite copies `VITE_` values into the public browser bundle. The
+key is a server-only `TAVILY_API_KEY` secret on a private Scout Worker. See
+[docs/scout-endpoint.md](docs/scout-endpoint.md) for setup and fake-transport local checks.
+The browser Scout has not been switched to that endpoint yet, so without the old variable it
+shows labelled demo samples.
 
 ### 3. Launch Development Server
 ```bash
@@ -138,8 +144,15 @@ This repository is pre-configured for seamless continuous deployment on **Cloudf
    - **Framework preset:** `Vite`
    - **Build command:** `bun run build`
    - **Build output directory:** `dist`
-5. Add your environment variables (`VITE_NEBIUS_API_KEY`, `VITE_TAVILY_API_KEY`).
+5. Add your environment variables (`VITE_NEBIUS_API_KEY`). Do not add a Tavily key here: Pages
+   environment variables that start with `VITE_` are built into the public bundle. If
+   `VITE_TAVILY_API_KEY` was set before, delete it and rotate that key in Tavily.
 6. Click **Save and Deploy**. Every team commit automatically creates a live preview!
+
+Live Tavily searches need a separate private Scout Worker. It holds the `TAVILY_API_KEY` secret
+and is reached through a `SCOUT_BACKEND` service binding on the Pages project. Pages builds do
+not deploy it, so the owner sets it up manually once, as described in
+[docs/scout-endpoint.md](docs/scout-endpoint.md).
 
 ---
 
