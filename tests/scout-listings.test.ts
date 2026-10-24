@@ -1,8 +1,8 @@
 // Offline checks for truthful Scout candidates and the Radar candidate selection used by App.
-// Run: node --experimental-strip-types --test tests/tavily-search.test.ts tests/scout-listings.test.ts
+// Run: node --experimental-strip-types --test tests/scout-listings.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { CITIES } from '../src/data/cities.ts';
 import {
   ALL_CITIES_ID,
   compareScoutCandidates,
@@ -18,12 +18,9 @@ import { getCitySearchProfile, runTavilyScoutSearch } from '../src/services/tavi
 import type { CityIdentity, ScoutFetch } from '../src/services/tavilySearch.ts';
 import type { Listing, RadarListing, ScoutListing } from '../src/types/index.ts';
 
-// src/data/cities.ts uses a bundler-resolved import, so Node cannot load it directly.
-// Read the actual CITIES records' id/name pairs from the source instead of copying them.
-const citiesSource = readFileSync(new URL('../src/data/cities.ts', import.meta.url), 'utf8');
-const CITY_RECORDS: CityIdentity[] = [...citiesSource.matchAll(/id:\s*'([^']+)',\s*name:\s*'([^']+)'/g)].map(
-  (match) => ({ id: match[1], name: match[2] })
-);
+// The actual CITIES records, loaded natively (src/data/cities.ts has only a type import).
+const CITY_RECORDS: CityIdentity[] = CITIES.map(({ id, name }) => ({ id, name }));
+assert.equal(CITY_RECORDS.length, 8);
 
 const SCOUT_LISTING_KEYS = [
   'cityId',
@@ -189,6 +186,8 @@ test('no-key demo creates one labelled local sample per city and makes no reques
     assert.equal(result.mode, 'demo', record.id);
     assert.equal(result.listings.length, 1, record.id);
     assert.match(result.rawAnswer ?? '', new RegExp(`^Demo mode: 1 sample result for ${record.name}\\.`));
+    assert.match(result.rawAnswer ?? '', /A local demo sample was used and no live search ran/);
+    assert.doesNotMatch(result.rawAnswer ?? '', /API key|backend/i);
 
     const [sample] = result.listings;
     const domain = getCitySearchProfile(record.id)?.includeDomains[0];

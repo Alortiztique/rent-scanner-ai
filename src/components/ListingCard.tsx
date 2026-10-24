@@ -230,7 +230,7 @@ export const ScoutCandidateCard: React.FC<ScoutCandidateCardProps> = ({ candidat
 
         <p className="mt-3 text-[10px] font-mono text-zinc-500">
           {isDemo
-            ? 'Created locally because no search backend is configured. No search ran.'
+            ? 'Local demo sample. No live search ran.'
             : 'Price, availability, and property details unknown. Not deal-scored or audited.'}
         </p>
       </div>

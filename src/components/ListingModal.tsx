@@ -144,8 +144,8 @@ const ScoutCandidateDetails: React.FC<{ candidate: ScoutListing; onClose: () => 
           >
             {isDemo ? (
               <>
-                This demo sample was created locally because no search backend is configured. Its text is
-                synthetic and it is not a real posting. The link opens the {host} homepage, not a listing.
+                This is a local demo sample: no live search ran. Its text is synthetic and it is not a real
+                posting. The link opens the {host} homepage, not a listing.
               </>
             ) : (
               <>
