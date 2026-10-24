@@ -65,8 +65,8 @@ Across the world’s major metropolises—**New York, London, Tokyo, Bogotá, Pa
   - Ultra-high throughput and competitive token pricing allowed us to route real-time conversational tenant queries and multi-page lease audits without latency bottlenecks or credit exhaustion.
 
 ### 2. Tavily Search API (Best Use of Tavily Bonus Track)
-- Makes real-time runtime calls to `https://api.tavily.com/search` to index off-market rental threads on Reddit (`r/NYCapartments`, `r/londonhousing`, `r/bogota`, `r/berlinhousing`), Craigslist, and university boards.
-- Normalizes unstructured text snippets into structured listing candidates for Nemotron validation.
+- The Live Web Scout searches each city's local listing boards and forums (for example Reddit, Craigslist, wg-gesucht.de, SpareRoom) with localized queries. The browser only calls this site's `/api/scout`; a private Scout Worker holds the Tavily key and makes the provider request ([docs/scout-endpoint.md](docs/scout-endpoint.md)).
+- Hits are shown as unverified search results with their source title, snippet and link. They carry no price, availability, deal score or audit.
 
 ### 3. Nebius Serverless Jobs (`backend/nebius_serverless_job.py`)
 - Background Python workers deployed as Nebius Serverless Jobs to periodically scrape, batch-evaluate, and update rental feeds across 8 global metropolises without dedicated servers.
@@ -82,7 +82,7 @@ Across the world’s major metropolises—**New York, London, Tokyo, Bogotá, Pa
 | **Nemotron Lease Auditor** | Evaluates scam risk (0–10), identifies predatory clauses, and verifies perks. | NVIDIA Nemotron-70B |
 | **Anti-Gentrification Index** | Compares price against local median income and speculative corporate pricing. | Custom AGI Algorithm |
 | **AI Negotiation Script** | Generates copy-paste messages to pitch landlords and negotiate discounts. | NVIDIA Nemotron-3-Ultra |
-| **Tavily Live Web Scout** | Real-time discovery of off-market sublease posts directly from the open web. | Tavily Search API |
+| **Tavily Live Web Scout** | Searches local listing boards and forums for unverified sublease posts through this site's private `/api/scout`. | Tavily Search API |
 | **Nemotron Tenant Copilot** | Interactive assistant answering questions on tenant rights and local laws. | Nebius Token Factory |
 
 ---
@@ -113,12 +113,16 @@ VITE_NEBIUS_BASE_URL=https://api.tokenfactory.nebius.com/v1
 VITE_NEBIUS_REASONING_MODEL=nvidia/llama-3.1-nemotron-70b-instruct
 ```
 
+**Tavily Scout mode:** `VITE_SCOUT_MODE` is a public setting. `demo` (the default, also used
+when unset) shows labelled local samples and makes no network request. `server` sends each
+search to this site's `/api/scout`. Any other value makes Scout searches report unavailable.
+In local development `/api/scout` does not exist, so `server` mode reports unavailable there.
+
 **Tavily key:** do not put it in `.env` or in any `VITE_` variable. That includes the old
-`VITE_TAVILY_API_KEY`, because Vite copies `VITE_` values into the public browser bundle. The
-key is a server-only `TAVILY_API_KEY` secret on a private Scout Worker. See
-[docs/scout-endpoint.md](docs/scout-endpoint.md) for setup and fake-transport local checks.
-The browser Scout has not been switched to that endpoint yet, so without the old variable it
-shows labelled demo samples.
+`VITE_TAVILY_API_KEY`, which the app no longer reads, because Vite copies `VITE_` values into
+the public browser bundle. The key is a server-only `TAVILY_API_KEY` secret on a private Scout
+Worker. See [docs/scout-endpoint.md](docs/scout-endpoint.md) for setup and fake-transport local
+checks.
 
 ### 3. Launch Development Server
 ```bash
@@ -144,15 +148,18 @@ This repository is pre-configured for seamless continuous deployment on **Cloudf
    - **Framework preset:** `Vite`
    - **Build command:** `bun run build`
    - **Build output directory:** `dist`
-5. Add your environment variables (`VITE_NEBIUS_API_KEY`). Do not add a Tavily key here: Pages
-   environment variables that start with `VITE_` are built into the public bundle. If
-   `VITE_TAVILY_API_KEY` was set before, delete it and rotate that key in Tavily.
+5. Add your environment variables (`VITE_NEBIUS_API_KEY`, and `VITE_SCOUT_MODE=server` once the
+   Scout Worker below is set up). Do not add a Tavily key here: Pages environment variables
+   that start with `VITE_` are built into the public bundle. If `VITE_TAVILY_API_KEY` was set
+   before, delete it and rotate that key in Tavily.
 6. Click **Save and Deploy**. Every team commit automatically creates a live preview!
 
-Live Tavily searches need a separate private Scout Worker. It holds the `TAVILY_API_KEY` secret
-and is reached through a `SCOUT_BACKEND` service binding on the Pages project. Pages builds do
-not deploy it, so the owner sets it up manually once, as described in
-[docs/scout-endpoint.md](docs/scout-endpoint.md).
+The browser code for live Tavily searches is wired to `/api/scout`, but live results also need
+a separate private Scout Worker. It holds the `TAVILY_API_KEY` secret and is reached through a
+`SCOUT_BACKEND` service binding on the Pages project. Pages builds do not deploy it, so the
+owner still has to deploy and configure it once (Worker, service binding, exact allowed origin
+and secret), as described in [docs/scout-endpoint.md](docs/scout-endpoint.md). Preview
+deployments cannot run live searches; with `server` mode they report unavailable.
 
 ---
 

@@ -1,13 +1,15 @@
 # Scout endpoint: private Tavily search
 
 The Live Web Scout's Tavily searches are meant to run on the server, so the Tavily key never
-reaches a browser. This repository contains the server side and its offline tests. It does not
+reaches a browser. This repository contains the server side, the browser client and their
+offline tests. It does not
 deploy or configure anything in a Cloudflare account. That is a manual owner step, described
 below.
 
-**Status:** the browser app has not been switched to this endpoint yet. Until a later frontend
-change does that, the Scout shows labelled demo samples. Do not set `VITE_TAVILY_API_KEY` as a
-workaround; see [Keys](#keys).
+**Status:** the browser Scout is wired to this endpoint. It sends searches here when the build
+sets `VITE_SCOUT_MODE=server`; the default, `demo`, shows labelled local samples without any
+network request (see [Browser client](#browser-client)). Live results still need the owner
+setup below. The app no longer reads `VITE_TAVILY_API_KEY`; see [Keys](#keys).
 
 ## How a request flows
 
@@ -66,6 +68,35 @@ Every response is JSON with `Cache-Control: no-store`. No CORS headers are sent.
 
 Error messages are fixed text. They never contain the key, the query, the client address,
 provider response text or stack traces. None of the error cases fall back to demo results.
+
+## Browser client
+
+`src/services/scoutClient.ts` is the browser side. `src/services/tavily.ts` passes it the
+public `VITE_SCOUT_MODE` value, the `CITIES` records and the browser `fetch`.
+
+- **Mode:** `demo` (default when unset or blank) makes no request and shows one labelled local
+  sample. `server` sends the request below. Any other value is reported as unavailable, and no
+  mode is picked silently.
+- **Request:** exactly one `POST` to the relative URL `/api/scout`, with
+  `Content-Type: application/json`, `credentials: omit`, `cache: no-store`,
+  `redirect: error` and `mode: same-origin`. The body is `{"cityId"}` plus the trimmed
+  `customQuery` if it is not blank. A query over 500 characters is refused before sending. The
+  browser holds no key and never calls the provider.
+- **Answer checks:** a `200` must be JSON with exactly the contract fields, the selected city's
+  `id` and `name`, and the same effective query the client expects. Hits go through the same
+  validation as on the server. All-malformed hits are unavailable, mixed lists keep the genuine
+  hits, and an empty list stays an empty live search. A `demo` answer must have `results: []`;
+  only then does the client show a demo sample, labelled as coming from the server.
+- **Failures:** contract error statuses, other statuses, HTML (for example the static site
+  answering because the Function is missing), invalid JSON, oversized bodies (over 1 MiB),
+  network errors and inconsistent answers are all unavailable. The user sees a fixed client
+  message, never the server's error text. None of them becomes demo or live.
+- **Deadline:** 12 seconds, a little longer than the Worker's 10-second provider limit. It covers
+  reading the response body. On timeout, or when the Scout dialog cancels the search (city
+  change, new search, close), the request and body read are aborted. A cancelled search is
+  reported as cancelled, not demo.
+- **Logs:** `[Scout] search unavailable: <fixed event> (HTTP <status>)` only; no query,
+  response text or error detail.
 
 ## Safety limits
 
@@ -133,7 +164,9 @@ dependency, so use `npx wrangler@4`.
 5. In the Pages project, go to **Settings > Bindings > Add > Service binding**. Set the variable
    name to `SCOUT_BACKEND` and the service to `rent-scanner-scout`, for the Production
    environment. Then redeploy Pages. Without the binding, `/api/scout` returns 503.
-6. Delete any `VITE_TAVILY_API_KEY` from the Pages environment variables.
+6. Delete any `VITE_TAVILY_API_KEY` from the Pages environment variables. Set
+   `VITE_SCOUT_MODE=server` for the Production environment and redeploy Pages, so the browser
+   Scout uses `/api/scout`. Without it the Scout stays in local demo mode.
 7. Check the deployment. From the production site, a Scout `POST` should return `live`. A `GET`
    should return 405. The Worker should have no `workers.dev` or preview URL. Also confirm that
    the Worker sees a different `CF-Connecting-IP` for different visitors, because the offline
@@ -148,15 +181,19 @@ searches return 503.
 
 ```sh
 npm ci
-node --experimental-strip-types --test tests/tavily-search.test.ts tests/scout-endpoint.test.ts
+node --experimental-strip-types --test tests/tavily-search.test.ts tests/scout-listings.test.ts \
+  tests/scout-endpoint.test.ts tests/scout-client.test.ts
 node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --target es2023 --module esnext \
   --moduleResolution bundler --lib es2023,dom --types node --allowImportingTsExtensions \
   worker/scout.ts functions/api/scout.ts
 ```
 
-The tests run the Worker's real `fetch` handler and the adapter's `onRequest`. The provider,
-rate limiters and service binding are fakes, and real network access is blocked during the
-tests.
+The pull-request CI workflow runs the same test files and typecheck, then lint and build.
+
+`tests/scout-endpoint.test.ts` runs the Worker's real `fetch` handler and the adapter's
+`onRequest`. `tests/scout-client.test.ts` runs the browser client against fake servers, and once
+through the real adapter and Worker on a fake network. Providers, rate limiters and service
+bindings are fakes, and real network access is blocked during the tests.
 
 To try the Worker under `wrangler dev`, leave `TAVILY_API_KEY` unset so it answers `demo`. Any
 key in `worker/.dev.vars`, even a fake one, sends real requests to Tavily. `.dev.vars` files
@@ -165,7 +202,6 @@ it.
 
 ## Not covered yet
 
-- Switching the browser Scout to this endpoint, removing its `VITE_TAVILY_API_KEY` read, and
-  adding a public setting to choose demo or server mode. A later frontend change owns this.
-- Running these tests and the Worker typecheck in CI.
+- The owner setup above: deploying the Worker, the Pages service binding, the allowed origin,
+  the secret and `VITE_SCOUT_MODE=server`. Nothing in this repository changes account settings.
 - Any deployed or live-provider verification, and the relevance of real search results.
