@@ -105,3 +105,23 @@ export interface TavilySearchResult {
   score?: number;
   published_date?: string;
 }
+
+export interface AlertPreferences {
+  cityId: string;
+  cityName: string;
+  maxPriceLocal: number;
+  currencySymbol: string;
+  minDealScore: number;
+  channel: 'telegram' | 'whatsapp';
+  targetChatOrChannel: string;
+  enabled: boolean;
+}
+
+export interface AlertDeliveryResult {
+  success: boolean;
+  channel: 'telegram' | 'whatsapp';
+  deliveredAt: string;
+  messagePreview: string;
+  error?: string;
+  isSimulated?: boolean;
+}
