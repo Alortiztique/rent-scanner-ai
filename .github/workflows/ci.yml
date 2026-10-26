@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-build:
+    name: Install, lint, and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js from .nvmrc
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      - name: Use npm version declared in package.json
+        run: |
+          npm_spec="$(node -p "require('./package.json').packageManager")"
+          case "$npm_spec" in
+            npm@*) ;;
+            *) echo "::error::Expected an npm packageManager declaration, got '$npm_spec'"; exit 1 ;;
+          esac
+          npm install --global --no-audit --no-fund "$npm_spec"
+          hash -r
+          actual="$(npm --version)"
+          if [ "$actual" != "${npm_spec#npm@}" ]; then
+            echo "::error::Expected npm ${npm_spec#npm@}, got $actual"
+            exit 1
+          fi
+          echo "node $(node --version), npm $actual"
+
+      - name: Install dependencies from lockfile
+        run: npm ci
+
+      - name: Run offline Scout tests
+        run: node --experimental-strip-types --test tests/tavily-search.test.ts tests/scout-listings.test.ts tests/scout-endpoint.test.ts tests/scout-client.test.ts
+
+      # The app build does not compile the Pages Function or the Worker, so check them here.
+      - name: Typecheck Scout server code
+        run: node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --target es2023 --module esnext --moduleResolution bundler --lib es2023,dom --types node --allowImportingTsExtensions worker/scout.ts functions/api/scout.ts
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
