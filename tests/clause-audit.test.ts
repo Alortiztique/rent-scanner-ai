@@ -92,18 +92,20 @@ interface ScriptedFinding {
   suggestedRevision?: string;
 }
 
+/** What a scripted finding says unless a test overrides it. modelReply and finding() both start here. */
+const FINDING_DEFAULTS: Required<Omit<ScriptedFinding, 'clauseText'>> = {
+  category: 'security_deposit',
+  severity: 'illegal',
+  issue: 'Exceeds the cap in the retrieved provision.',
+  legalReference: 'US_NYC.securityDeposit',
+  suggestedRevision: 'Tenant pays a security deposit of no more than one month of rent.',
+};
+
 function modelReply(summary: string, findings: ScriptedFinding[]) {
   return JSON.stringify({
     language: 'English',
     summary,
-    findings: findings.map((f) => ({
-      category: 'security_deposit',
-      severity: 'illegal',
-      issue: 'Exceeds the cap in the retrieved provision.',
-      legalReference: 'US_NYC.securityDeposit',
-      suggestedRevision: 'Tenant pays a security deposit of no more than one month of rent.',
-      ...f,
-    })),
+    findings: findings.map((f) => ({ ...FINDING_DEFAULTS, ...f })),
   });
 }
 
@@ -492,7 +494,8 @@ test('a network error, which the transport turns into an empty answer, is a visi
 // These call LeaseAuditPrompt with scripted provider replies. Findings with the same category
 // and the same quote (ignoring case and whitespace) form a group, and one finding per group
 // survives. The winner is chosen after verification: highest verified severity, then fully
-// verified evidence, then the earliest in the model reply.
+// verified evidence, then the earliest in the model reply. Each survivor keeps its own place in
+// the model reply, so a winner that came after other findings is listed after them.
 
 const DEDUP_LEASE = `${DEPOSIT_CLAUSE} ${OTHER_CLAUSE}`;
 const DEPOSIT_QUOTE = '$3,000 cash security deposit';
@@ -503,13 +506,12 @@ const FABRICATED_REF = 'US_NYC.madeUpProvision';
 
 type FullFinding = Required<ScriptedFinding>;
 
+/** A default finding named by its issue. The issue and revision text are specific to each fixture. */
 function finding(issue: string, overrides: Partial<ScriptedFinding> = {}): FullFinding {
   return {
     clauseText: DEPOSIT_QUOTE,
-    category: 'security_deposit',
-    severity: 'illegal',
+    ...FINDING_DEFAULTS,
     issue,
-    legalReference: 'US_NYC.securityDeposit',
     suggestedRevision: `Revision: ${issue}`,
     ...overrides,
   };
@@ -533,6 +535,13 @@ const unsupportedWarning = finding('unsupported warning', { severity: 'warning',
 const supportedWarning = finding('supported warning', { severity: 'warning' });
 const unsupportedInfo = finding('unsupported info', { severity: 'info', legalReference: FABRICATED_REF });
 const supportedInfo = finding('supported info', { severity: 'info' });
+// A group of its own: another category and quote, a warning that is fully verified.
+const lateFee = finding('late fee', {
+  clauseText: '$200 for each day',
+  category: 'late_fee',
+  severity: 'warning',
+  legalReference: 'US_NYC.lateFees',
+});
 
 function permutations<T>(items: T[]): T[][] {
   if (items.length <= 1) return [items];
@@ -650,12 +659,6 @@ test('different categories and different quotes stay separate, and the result is
     severity: 'info',
     legalReference: 'US_NYC.summary',
   });
-  const lateFee = finding('late fee', {
-    clauseText: '$200 for each day',
-    category: 'late_fee',
-    severity: 'warning',
-    legalReference: 'US_NYC.lateFees',
-  });
   const summarize = (result: ReAuditResult) => result.findings.map((f) => [f.severity, f.issue]);
 
   const first = await auditReply([otherQuote, otherCategory, unsupportedIllegal, lateFee, supportedIllegal]);
@@ -676,6 +679,29 @@ test('different categories and different quotes stay separate, and the result is
     ['warning', 'same quote, other category'],
     ['info', 'same category, other quote'],
   ]);
+});
+
+test('a winner that replaces an earlier duplicate is listed where the winner came, not where its group began', async () => {
+  // Reply order is A1, B, A2. A1 claims illegal with a made-up citation, so it is a warning after
+  // verification. A2 is a fully verified warning on the same category and quote, so it replaces A1.
+  // B is a fully verified warning in a group of its own. A2 came after B, so the result is B, A2.
+  // Listing groups by their first member would give A2, B. All three are warnings, so the final
+  // severity sort leaves this order alone.
+  const result = await auditReply([unsupportedIllegal, lateFee, supportedWarning]);
+  assert.equal(result.isValid, true);
+  assert.deepEqual(result.findings, [verified(lateFee), verified(supportedWarning)]);
+
+  // In any reply order the survivors keep the order of the reply, and only A1 is dropped.
+  for (const findings of permutations([unsupportedIllegal, lateFee, supportedWarning])) {
+    const reordered = await auditReply(findings);
+    const label = orderLabel(findings);
+    assert.equal(reordered.isValid, true, label);
+    assert.deepEqual(
+      reordered.findings,
+      findings.filter((f) => f !== unsupportedIllegal).map((f) => verified(f)),
+      label,
+    );
+  }
 });
 
 test('isValid is computed from the findings that remain after deduplication', async () => {
