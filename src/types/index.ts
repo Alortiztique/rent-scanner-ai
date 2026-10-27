@@ -62,13 +62,18 @@ export interface LegalSourceRef {
   source: string;
 }
  
-// The unit stored and retrieved by the RAG.
+// The unit stored and retrieved by the RAG. Every city covers the four core topics. The rest are
+// supporting topics that a city has a rule for only where its law needs one.
 export type LegalCategory =
   | 'summary'
   | 'security_deposit'
   | 'late_fee'
   | 'rent_increase'
-  | 'termination';
+  | 'termination'
+  | 'fees_and_charges'
+  | 'rent_stabilization'
+  | 'tenant_registration'
+  | 'subletting';
  
 export interface LegalChunk {
   id: string; // citable ID, e.g. "CO_BOG.rentIncreases" or "CO_BOG.rentIncreases.ipc-cap"

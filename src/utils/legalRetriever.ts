@@ -59,6 +59,36 @@ export const CATEGORY_LEXICON: Record<CoreCategory, string[]> = {
     'conge', 'resiliation', 'preavis', 'expulsion',
     'kundigung', 'kundigungsfrist', 'raumung', 'untervermietung',
   ],
+  // Supporting topics: a city has a chunk for them only where its law needs one (see legalContext.ts).
+  fees_and_charges: [
+    'application fee', 'application charge', 'processing fee', 'screening fee',
+    'credit check', 'credit report', 'background check', 'administrative fee', 'admin fee',
+    'tarifa de solicitud', 'cargo por solicitud', 'cuota de solicitud', 'costo de solicitud',
+    'tarifa de procesamiento', 'tarifa administrativa', 'cargo administrativo', 'gastos administrativos',
+    'verificacion de credito', 'consulta de credito', 'informe de credito', 'verificacion de antecedentes',
+  ],
+  rent_stabilization: [
+    'rent stabilized', 'rent-stabilized', 'rent stabilization', 'rent-stabilization', 'stabilized apartment',
+    'stabilized unit', 'rent regulated', 'rent-regulated', 'dhcr', 'ra-lr1', 'ra lr1', 'ralr1', 'rider',
+    'vacancy lease',
+    'estabilizacion', 'estabilizada', 'estabilizado',
+  ],
+  tenant_registration: [
+    'registration', 'register at', 'register with', 'register the address', 'register their address',
+    'landlord confirmation', 'landlord certificate', 'confirmation of residence', 'move-in confirmation',
+    'confirmation of move-in',
+    'empadron', 'registro de domicilio', 'registro de residencia', 'registrar el domicilio', 'registrarse',
+    'confirmacion del arrendador', 'confirmacion del propietario', 'certificado del arrendador',
+    'wohnungsgeber', 'wohnungsgeberbestatigung', 'anmeldung', 'anmelden', 'ummeldung', 'meldebehorde',
+    'meldebescheinigung', 'meldepflicht', 'einwohnermeldeamt', 'burgeramt', 'buergeramt',
+  ],
+  subletting: [
+    'sublet', 'sublease', 'subleasing', 'sub-let', 'subtenant', 'sublessee', 'lodger',
+    'rent out a room', 'rent out part', 'airbnb', 'short-term rental', 'short-term letting',
+    'subarriendo', 'subarrendar', 'subarrendatario', 'subalquiler', 'subalquilar', 'sublocacion',
+    'sous-location', 'sous-louer', 'sous-locataire',
+    'untermiete', 'untermieter', 'untermietvertrag', 'untervermietung', 'untervermieten', 'gebrauchsuberlassung',
+  ],
 };
  
  
@@ -130,6 +160,9 @@ export function getCorpusForCity(cityCode: string): LegalChunk[] {
  
 const CORE_CATEGORIES = Object.keys(CATEGORY_LEXICON) as CoreCategory[];
  
+// The four topics every city covers. The no-signal fallback uses only these.
+const FALLBACK_CATEGORIES: CoreCategory[] = ['security_deposit', 'late_fee', 'rent_increase', 'termination'];
+
 const DEFAULT_TOP_K = 5;
 const DEFAULT_MAX_CHARS = 6000;
  
@@ -261,7 +294,7 @@ export function retrieveLegalChunks(
  
   // 4. No signal at all: give the model the core rules rather than nothing.
   if (selected.size <= 1) {
-    for (const category of CORE_CATEGORIES) {
+    for (const category of FALLBACK_CATEGORIES) {
       const first = index.chunks.find((c) => c.category === category);
       if (first) add(first, 0, 'fallback');
     }

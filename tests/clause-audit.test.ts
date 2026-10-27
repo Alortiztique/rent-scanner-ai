@@ -7,8 +7,9 @@
 // load through an in-process Vite SSR loader that reads no .env file.
 // These checks cover state handling, request wiring, and rendering. The duplicate-finding and
 // whitespace-only-quote checks call LeaseAuditPrompt itself with scripted provider replies. The
-// text-folding checks call the public functions of src/utils/legalRetriever.ts directly. They
-// do not establish that any legal conclusion is correct.
+// text-folding checks call the public functions of src/utils/legalRetriever.ts directly. The
+// supporting-rule checks for New York City and Berlin do both. They do not establish that any
+// legal conclusion is correct.
 // Run: node --experimental-strip-types --test tests/clause-audit.test.ts
 import { after, before, beforeEach, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -155,6 +156,7 @@ let panel: PanelModule;
 let modal: ModalModule;
 let nycListing: Listing;
 let londonListing: Listing;
+let berlinListing: Listing;
 
 before(async () => {
   server = await createServer({
@@ -181,6 +183,7 @@ before(async () => {
   };
   nycListing = byCity('New York City');
   londonListing = byCity('London');
+  berlinListing = byCity('Berlin');
 });
 
 after(async () => {
@@ -554,13 +557,17 @@ function permutations<T>(items: T[]): T[][] {
   );
 }
 
+/** The closed list of citable IDs that the prompt gives the model. */
+const allowedReferences = (system: string) =>
+  (system.match(/ALLOWED legalReference VALUES \(closed list\): (.*)/)?.[1] ?? '').split(', ');
+
 /** Runs the real auditor on a scripted model reply and checks the fixture assumptions first. */
 async function auditReply(findings: FullFinding[]): Promise<ReAuditResult> {
   providerCalls = [];
   providerHandler = () => completion(modelReply('Duplicate check.', findings));
   const result = await leaseAudit.LeaseAuditPrompt(nycListing, DEDUP_LEASE);
   assert.equal(providerCalls.length, 1);
-  const allowed = (providerCalls[0].system.match(/ALLOWED legalReference VALUES \(closed list\): (.*)/)?.[1] ?? '').split(', ');
+  const allowed = allowedReferences(providerCalls[0].system);
   for (const ref of ['US_NYC.summary', 'US_NYC.securityDeposit', 'US_NYC.lateFees']) {
     assert.ok(allowed.includes(ref), `${ref} is retrieved for the fixture lease`);
   }
@@ -901,7 +908,7 @@ test('a real audit result shows the quote, severity, issue, revision, citation t
   assert.match(markup, /Illegal clause flagged/);
   assert.ok(markup.includes(`Model: ${FAKE_MODEL} (via Nebius Token Factory)`));
   assert.match(markup, /not legal advice/);
-  // Every corpus source field is empty today, so nothing may be linked.
+  // The New York City rules retrieved for a deposit clause have no source, so nothing may be linked.
   assert.doesNotMatch(markup, /<a /);
   assert.doesNotMatch(markup, /href=/);
 });
@@ -1061,6 +1068,407 @@ test('retrieval returns the same chunks, scores, and reasons for every spelling 
     japanese.chunks.map((c) => c.reason),
     ['always', 'fallback', 'fallback', 'fallback', 'fallback'],
   );
+});
+
+// ---------------------------------------------------------------------------------------------
+// Supporting rules for New York City and Berlin
+//
+// Application fees and the rent-stabilization rider (New York City), and the registration
+// confirmation and subletting (Berlin), are chunks of their own. Each has a retrieval category and
+// an official source. These checks run the real retriever and LeaseAuditPrompt with scripted
+// provider replies. They show that a clause on each topic retrieves its rule by default, that the
+// rule reaches the prompt text and the closed citation list, and that its title and source reach
+// the result. A scripted reply says nothing about whether a model reasons correctly about the law.
+
+interface SupportingRule {
+  code: string;
+  id: string;
+  category: string; // the retrieval category of the chunk
+  findingCategory: string; // the audit category a finding on this topic would use
+  source: string;
+  anchors: string[]; // phrases the rule text must keep, so a trimmed or swapped text fails
+  clauses: { language: string; lease: string; quote: string }[];
+}
+
+const SUPPORTING_RULES: SupportingRule[] = [
+  {
+    code: 'US_NYC',
+    id: 'US_NYC.applicationFees',
+    category: 'fees_and_charges',
+    findingCategory: 'fees_and_charges',
+    source: 'https://www.nysenate.gov/legislation/laws/RPP/238-A',
+    anchors: ['$20', '30 days', 'receipt or invoice', 'not a permitted flat application fee'],
+    clauses: [
+      {
+        language: 'English application fee',
+        lease: 'Applicant pays a non-refundable $200 application fee when submitting the application.',
+        quote: '$200 application fee',
+      },
+      {
+        language: 'English credit and background check fee',
+        lease: 'A $75 credit and background check fee is charged at signing.',
+        quote: '$75 credit and background check fee',
+      },
+      {
+        language: 'Spanish application fee',
+        lease: 'El solicitante pagará una tarifa de solicitud de $200 al presentar la solicitud.',
+        quote: 'tarifa de solicitud de $200',
+      },
+      {
+        language: 'Spanish credit check',
+        lease: 'Se cobra una verificación de crédito de $75 al firmar.',
+        quote: 'verificación de crédito de $75',
+      },
+    ],
+  },
+  {
+    code: 'US_NYC',
+    id: 'US_NYC.rentStabilizationRider',
+    category: 'rent_stabilization',
+    findingCategory: 'other',
+    source: 'https://hcr.ny.gov/leases',
+    anchors: ['RA-LR1', 'vacancy lease', 'renewal lease', 'market-rate'],
+    clauses: [
+      {
+        language: 'English DHCR rider',
+        lease: 'This apartment is rent stabilized, but the owner will not provide the DHCR rider with the vacancy lease.',
+        quote: 'will not provide the DHCR rider',
+      },
+      {
+        language: 'English form number',
+        lease: 'The owner refuses to attach Form RA-LR1 to the renewal lease.',
+        quote: 'refuses to attach Form RA-LR1',
+      },
+      {
+        language: 'Spanish DHCR rider',
+        lease: 'El propietario no entregará el anexo de estabilización DHCR del contrato de renovación.',
+        quote: 'no entregará el anexo de estabilización DHCR',
+      },
+    ],
+  },
+  {
+    code: 'DE_BER',
+    id: 'DE_BER.registrationConfirmation',
+    category: 'tenant_registration',
+    findingCategory: 'other',
+    source: 'https://www.gesetze-im-internet.de/bmg/__19.html',
+    anchors: ['two weeks', 'Wohnungsgeberbestätigung', '§ 19 BMG', 'does not show a refusal'],
+    clauses: [
+      {
+        language: 'German Wohnungsgeberbestätigung',
+        lease: 'Der Vermieter verweigert die Wohnungsgeberbestätigung, daher ist die Anmeldung beim Bürgeramt untersagt.',
+        quote: 'verweigert die Wohnungsgeberbestätigung',
+      },
+      {
+        language: 'English landlord confirmation',
+        lease: 'The landlord will not issue the landlord confirmation, so the tenant cannot complete city registration.',
+        quote: 'will not issue the landlord confirmation',
+      },
+      {
+        language: 'Spanish confirmación del arrendador',
+        lease: 'El arrendador no entrega la confirmación del arrendador y prohíbe el empadronamiento.',
+        quote: 'no entrega la confirmación del arrendador',
+      },
+    ],
+  },
+  {
+    code: 'DE_BER',
+    id: 'DE_BER.subletting',
+    category: 'subletting',
+    findingCategory: 'termination',
+    source: 'https://www.gesetze-im-internet.de/bgb/__553.html',
+    anchors: ['part of the dwelling', '§ 553', 'blanket ban'],
+    clauses: [
+      {
+        language: 'German Untervermietung',
+        lease: 'Jede Untervermietung ist verboten, auch für ein einzelnes Zimmer.',
+        quote: 'Jede Untervermietung ist verboten',
+      },
+      {
+        language: 'German Untermietvertrag',
+        lease: 'Ein Untermietvertrag ist ausgeschlossen.',
+        quote: 'Ein Untermietvertrag ist ausgeschlossen',
+      },
+      {
+        language: 'English subletting',
+        lease: 'Subletting of any kind is strictly prohibited.',
+        quote: 'Subletting of any kind is strictly prohibited',
+      },
+      {
+        language: 'Spanish subarriendo',
+        lease: 'Queda prohibido cualquier subarriendo.',
+        quote: 'prohibido cualquier subarriendo',
+      },
+    ],
+  },
+];
+
+const ALL_CITY_CODES = ['US_NYC', 'UK_LON', 'JP_TYO', 'CO_BOG', 'AE_DXB', 'FR_PAR', 'DE_BER', 'US_SF'];
+const listingFor = (code: string) => (code === 'US_NYC' ? nycListing : berlinListing);
+const ruleFor = (id: string) => {
+  const rule = SUPPORTING_RULES.find((r) => r.id === id);
+  assert.ok(rule, id);
+  return rule;
+};
+const chunkFor = (rule: SupportingRule) => {
+  const chunk = retriever.getCorpusForCity(rule.code).find((c) => c.id === rule.id);
+  assert.ok(chunk, rule.id);
+  return chunk;
+};
+
+// A clause on two supporting topics, with the quote that a finding on each rule would cite.
+const MIXED_CLAUSES: { code: string; language: string; lease: string; cited: [string, string][] }[] = [
+  {
+    code: 'US_NYC',
+    language: 'English',
+    lease: 'Applicant pays a $200 application fee. The apartment is rent stabilized, but the owner will not attach the DHCR rider to the vacancy lease.',
+    cited: [
+      ['US_NYC.applicationFees', '$200 application fee'],
+      ['US_NYC.rentStabilizationRider', 'will not attach the DHCR rider'],
+    ],
+  },
+  {
+    code: 'US_NYC',
+    language: 'English with a renewal and a deposit',
+    lease: 'A $75 credit and background check fee is due, with a $3,000 security deposit. The owner refuses to attach Form RA-LR1 to the renewal lease.',
+    cited: [
+      ['US_NYC.applicationFees', '$75 credit and background check fee'],
+      ['US_NYC.rentStabilizationRider', 'refuses to attach Form RA-LR1'],
+    ],
+  },
+  {
+    code: 'US_NYC',
+    language: 'Spanish',
+    lease: 'El solicitante pagará una tarifa de solicitud de $200. El propietario no entregará el anexo de estabilización DHCR.',
+    cited: [
+      ['US_NYC.applicationFees', 'tarifa de solicitud de $200'],
+      ['US_NYC.rentStabilizationRider', 'no entregará el anexo de estabilización DHCR'],
+    ],
+  },
+  {
+    code: 'DE_BER',
+    language: 'German',
+    lease: 'Der Vermieter verweigert die Wohnungsgeberbestätigung. Jede Untervermietung ist ausnahmslos verboten.',
+    cited: [
+      ['DE_BER.registrationConfirmation', 'verweigert die Wohnungsgeberbestätigung'],
+      ['DE_BER.subletting', 'Jede Untervermietung ist ausnahmslos verboten'],
+    ],
+  },
+  {
+    code: 'DE_BER',
+    language: 'English',
+    lease: 'The landlord refuses the landlord confirmation needed for city registration. Subletting of any kind is prohibited.',
+    cited: [
+      ['DE_BER.registrationConfirmation', 'refuses the landlord confirmation'],
+      ['DE_BER.subletting', 'Subletting of any kind is prohibited'],
+    ],
+  },
+  {
+    code: 'DE_BER',
+    language: 'Spanish',
+    lease: 'El arrendador se niega a dar la confirmación del arrendador. Queda prohibido el subarriendo.',
+    cited: [
+      ['DE_BER.registrationConfirmation', 'se niega a dar la confirmación del arrendador'],
+      ['DE_BER.subletting', 'Queda prohibido el subarriendo'],
+    ],
+  },
+];
+
+test('each supporting rule is a sourced chunk with its own category in the right city', () => {
+  for (const rule of SUPPORTING_RULES) {
+    const chunk = chunkFor(rule);
+    assert.equal(chunk.cityCode, rule.code, rule.id);
+    assert.equal(chunk.category, rule.category, rule.id);
+    assert.ok(chunk.title.trim(), rule.id);
+    assert.equal(chunk.source, rule.source, rule.id);
+    assert.equal(new URL(chunk.source).protocol, 'https:', rule.id);
+    for (const anchor of rule.anchors) assert.ok(chunk.text.includes(anchor), `${rule.id} keeps "${anchor}"`);
+  }
+});
+
+test('a clause on each supporting topic retrieves its rule by routing, in English and in local forms', () => {
+  for (const rule of SUPPORTING_RULES) {
+    for (const { language, lease } of rule.clauses) {
+      const label = `${rule.id}: ${language}`;
+      const { chunks, detectedCategories } = retriever.retrieveLegalChunks(rule.code, lease);
+      assert.ok(detectedCategories.includes(rule.category as (typeof detectedCategories)[number]), label);
+      assert.equal(chunks.find((c) => c.chunk.id === rule.id)?.reason, 'category', label);
+      assert.ok(chunks.every((c) => c.chunk.cityCode === rule.code), label);
+    }
+  }
+});
+
+test('each supporting rule reaches the prompt and its closed citation list, and its source reaches the verified result', async () => {
+  for (const rule of SUPPORTING_RULES) {
+    const chunk = chunkFor(rule);
+    for (const { language, lease, quote } of rule.clauses) {
+      const label = `${rule.id}: ${language}`;
+      const cited = finding(`Checks ${rule.id}`, {
+        clauseText: quote,
+        category: rule.findingCategory,
+        legalReference: rule.id,
+      });
+      providerCalls = [];
+      providerHandler = () => completion(modelReply('Supporting rule check.', [cited]));
+      const result = await leaseAudit.LeaseAuditPrompt(listingFor(rule.code), lease);
+
+      assert.equal(providerCalls.length, 1, label);
+      const { system, user } = providerCalls[0];
+      assert.equal(user, lease, label);
+      assert.ok(system.includes(`[${rule.id}] ${chunk.title}`), label);
+      assert.ok(system.includes(chunk.text), label);
+      assert.ok(system.includes(`(Source: ${rule.source})`), label);
+      const allowed = allowedReferences(system);
+      assert.ok(allowed.includes(rule.id), label);
+      assert.ok(allowed.includes(`${rule.code}.summary`), label);
+      assert.ok(allowed.every((id) => id.startsWith(`${rule.code}.`)), label);
+      for (const code of ALL_CITY_CODES.filter((c) => c !== rule.code)) {
+        assert.ok(!system.includes(`${code}.`), `${label} has no ${code} rule`);
+      }
+
+      assert.deepEqual(
+        result.legalSources.find((s) => s.id === rule.id),
+        { id: rule.id, title: chunk.title, source: rule.source },
+        label,
+      );
+      assert.deepEqual(result.findings, [verified(cited)], label);
+      assert.equal(result.isValid, false, label);
+    }
+  }
+});
+
+test('the official source of a retrieved supporting rule is a link in the clause audit result', async () => {
+  for (const rule of SUPPORTING_RULES) {
+    const [{ lease, quote }] = rule.clauses;
+    providerHandler = () =>
+      completion(
+        modelReply('Source check.', [
+          finding('Source check', { clauseText: quote, category: rule.findingCategory, legalReference: rule.id }),
+        ]),
+      );
+    const controller = controllerFor(listingFor(rule.code));
+    controller.setClause(lease);
+    await controller.submit();
+    assert.equal(controller.getState().status, 'success', rule.id);
+
+    const markup = renderPanel(controller.getState(), listingFor(rule.code).cityName);
+    const anchors = markup.match(/<a [^>]*>/g) ?? [];
+    assert.ok(
+      anchors.some((a) => a.includes(`href="${rule.source}"`) && a.includes('rel="noopener noreferrer"')),
+      rule.id,
+    );
+    assert.match(markup, new RegExp(`<code[^>]*>${rule.id.replace('.', '\\.')}</code>`), rule.id);
+  }
+});
+
+test('a clause on two supporting topics retrieves both rules within the default budget, from its own city only', async () => {
+  for (const { code, language, lease, cited } of MIXED_CLAUSES) {
+    const label = `${code}: ${language}`;
+    const { chunks } = retriever.retrieveLegalChunks(code, lease);
+    assert.ok(chunks.length <= 5, `${label} fits the default topK`);
+    assert.ok(chunks.reduce((sum, c) => sum + c.chunk.text.length, 0) <= 6000, `${label} fits the default maxChars`);
+    assert.ok(chunks.every((c) => c.chunk.cityCode === code), label);
+    assert.ok(chunks.some((c) => c.chunk.id === `${code}.summary`), label);
+    for (const [id] of cited) assert.equal(chunks.find((c) => c.chunk.id === id)?.reason, 'category', `${label}: ${id}`);
+
+    const findings = cited.map(([id, quote]) =>
+      finding(`Checks ${id}`, { clauseText: quote, category: ruleFor(id).findingCategory, legalReference: id }),
+    );
+    providerCalls = [];
+    providerHandler = () => completion(modelReply('Mixed topics.', findings));
+    const result = await leaseAudit.LeaseAuditPrompt(listingFor(code), lease);
+
+    const allowed = allowedReferences(providerCalls[0].system);
+    assert.deepEqual(allowed, chunks.map((c) => c.chunk.id), label);
+    assert.deepEqual(result.findings, findings.map((f) => verified(f)), label);
+    for (const [id] of cited) {
+      assert.equal(result.legalSources.find((s) => s.id === id)?.source, ruleFor(id).source, `${label}: ${id}`);
+    }
+    for (const other of ALL_CITY_CODES.filter((c) => c !== code)) {
+      assert.ok(!providerCalls[0].system.includes(`${other}.`), `${label} has no ${other} rule`);
+    }
+  }
+});
+
+test('supporting rules stay out of core-topic retrieval, and the no-signal fallback stays on the core rules', () => {
+  const { retrieveLegalChunks } = retriever;
+  const supportingIds = new Set(SUPPORTING_RULES.map((r) => r.id));
+  const idsOf = (code: string, text: string) => retrieveLegalChunks(code, text).chunks.map((c) => c.chunk.id);
+
+  // Words such as "tenant" or "must" are common to every clause. If a supporting rule scored on
+  // them, it would take a slot in unrelated retrieval and put a source link in the audit result.
+  for (const id of idsOf('US_NYC', DEPOSIT_CLAUSE)) assert.ok(!supportingIds.has(id), id);
+  for (const id of idsOf('DE_BER', 'Kündigungsfrist und Mieterhöhung')) assert.ok(!supportingIds.has(id), id);
+
+  // No signal still returns the summary and the four core rules, in the default budget.
+  for (const code of ['US_NYC', 'DE_BER']) {
+    const result = retrieveLegalChunks(code, 'zzzz qqqq');
+    assert.deepEqual(result.detectedCategories, [], code);
+    assert.deepEqual(
+      result.chunks.map((c) => [c.chunk.id, c.reason]),
+      [
+        [`${code}.summary`, 'always'],
+        [`${code}.securityDeposit`, 'fallback'],
+        [`${code}.lateFees`, 'fallback'],
+        [`${code}.rentIncreases`, 'fallback'],
+        [`${code}.terminationRules`, 'fallback'],
+      ],
+      code,
+    );
+  }
+});
+
+test('a supporting rule is retrieved only for its own city, whatever the language of the clause', () => {
+  for (const rule of SUPPORTING_RULES) {
+    for (const { language, lease } of rule.clauses) {
+      for (const code of ALL_CITY_CODES) {
+        const { chunks } = retriever.retrieveLegalChunks(code, lease);
+        const label = `${rule.id}: ${language} in ${code}`;
+        assert.ok(chunks.every((c) => c.chunk.cityCode === code), label);
+        assert.equal(chunks.some((c) => c.chunk.id === rule.id), code === rule.code, label);
+      }
+    }
+  }
+});
+
+test('supporting-rule terms give one result for the accented, uppercase, decomposed, and plain spelling', () => {
+  const { detectCategories, retrieveLegalChunks } = retriever;
+  const spellings: [string, string][] = [
+    ['Wohnungsgeberbestätigung', 'tenant_registration'],
+    ['Bürgeramt', 'tenant_registration'],
+    ['confirmación del arrendador', 'tenant_registration'],
+    ['anexo de estabilización', 'rent_stabilization'],
+    ['verificación de crédito', 'fees_and_charges'],
+    ['tarifa de solicitud', 'fees_and_charges'],
+    ['Untermietvertrag', 'subletting'],
+  ];
+  for (const [term, category] of spellings) {
+    const forms = [term, term.toUpperCase(), term.normalize('NFD'), term.normalize('NFD').replace(/[\u0300-\u036f]/g, '')];
+    const expected = detectCategories(term);
+    assert.deepEqual(expected.map((d) => d.category), [category], term);
+    for (const form of forms) assert.deepEqual(detectCategories(form), expected, form);
+  }
+  // Short terms keep their word boundaries, and the form number is found in its common spellings.
+  assert.deepEqual(detectCategories('dhcrx'), []);
+  for (const form of ['DHCR', 'RA-LR1', 'ra lr1', 'RALR1']) {
+    assert.deepEqual(detectCategories(form).map((d) => d.category), ['rent_stabilization'], form);
+  }
+
+  // The folded words also reach the index terms, so every spelling gives the same chunks and scores.
+  const [reference, ...others] = [
+    'Wohnungsgeberbestätigung und Untermietvertrag',
+    'WOHNUNGSGEBERBESTÄTIGUNG UND UNTERMIETVERTRAG',
+    'Wohnungsgeberbestätigung und Untermietvertrag'.normalize('NFD'),
+    'wohnungsgeberbestatigung und untermietvertrag',
+  ].map((text) => retrieveLegalChunks('DE_BER', text));
+  assert.deepEqual([...reference.detectedCategories].sort(), ['subletting', 'tenant_registration']);
+  for (const id of ['DE_BER.registrationConfirmation', 'DE_BER.subletting']) {
+    const hit = reference.chunks.find((c) => c.chunk.id === id);
+    assert.ok(hit, id);
+    assert.equal(hit.reason, 'category', id);
+    assert.ok(hit.score > 0, id);
+  }
+  for (const other of others) assert.deepEqual(other, reference);
 });
 
 // ---------------------------------------------------------------------------------------------
