@@ -27,8 +27,8 @@ export const LEGAL_KNOWLEDGE_BASE: Record<string, LegalContext> = {
         id: "US_NYC.rentIncreases",
         category: 'rent_increase',
         title: "Rent increases",
-        text: "Rent-stabilized units: increases limited to Rent Guidelines Board orders. Market-rate units: no general cap, but written notice is required (30/60/90 days depending on size of increase and length of tenancy); units covered by Good Cause Eviction have an annual cap (lesser of 10% or CPI + 5%).",
-        source: '',
+        text: "Rent-stabilized units: increases limited to Rent Guidelines Board orders. That regime is separate, and the Good Cause standard below does not replace it. Market-rate units: no general cap, but written notice is required (30/60/90 days depending on size of increase and length of tenancy). The Good Cause Eviction law (Real Property Law §§ 211 and 216) sets a local rent standard for covered units: the lesser of 10% or the local CPI inflation rate plus 5 percentage points. HPD publishes the current figure, which changes each year. Coverage is not automatic for every market-rate unit. Rent-regulated units, some small or owner-occupied landlords and other exempt categories are outside the law, so check whether the unit is covered. For a covered unit, an increase at or below the standard is not deemed unreasonable under this law, though other laws can still apply. An increase above the standard in a calendar year is presumed unreasonable, but the presumption is rebuttable and is not an absolute cap. A court decides whether the increase is unreasonable. It must consider the landlord's property tax expenses and recent increases in them, and may consider other relevant facts, such as a good-faith increase on renewal to reflect completed significant repairs (cosmetic work does not count, and neither do repairs caused by poor maintenance). An increase above the standard in a covered unit is therefore not automatically illegal or void. The outcome depends on the court's assessment of the evidence.",
+        source: 'https://www.nysenate.gov/legislation/laws/RPP/216',
         keywords: [],
       },
       {

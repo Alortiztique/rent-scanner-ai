@@ -8,8 +8,8 @@
 // These checks cover state handling, request wiring, and rendering. The duplicate-finding and
 // whitespace-only-quote checks call LeaseAuditPrompt itself with scripted provider replies. The
 // text-folding checks call the public functions of src/utils/legalRetriever.ts directly. The
-// supporting-rule checks for New York City and Berlin do both. They do not establish that any
-// legal conclusion is correct.
+// supporting-rule checks for New York City and Berlin do both, and so do the New York City
+// rent-increase checks. They do not establish that any legal conclusion is correct.
 // Run: node --experimental-strip-types --test tests/clause-audit.test.ts
 import { after, before, beforeEach, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -26,6 +26,8 @@ const FAKE_MODEL = 'test/offline-model';
 const ENDPOINT = `${FAKE_BASE_URL}/chat/completions`;
 const DEPOSIT_CLAUSE = 'Tenant must pay a $3,000 cash security deposit on the day of signing.';
 const OTHER_CLAUSE = 'Late rent costs $200 for each day it is overdue.';
+const RENT_INCREASE_ID = 'US_NYC.rentIncreases';
+const RENT_INCREASE_SOURCE = 'https://www.nysenate.gov/legislation/laws/RPP/216';
 
 // Placeholders for the app's build-time settings, set before the modules load. Vite reads them
 // from the process environment because the loader below is told to read no .env file.
@@ -206,6 +208,11 @@ function renderPanel(state: ClauseAuditState, cityName = 'New York City') {
   return renderToStaticMarkup(
     createElement(panel.ClauseAuditPanel, { cityName, state, onClauseChange: () => {}, onSubmit: () => {} }),
   );
+}
+
+/** The "Rules checked" list items of a rendered result, by rule ID. */
+function rulesChecked(markup: string): Record<string, string> {
+  return Object.fromEntries([...markup.matchAll(/<li><code[^>]*>([\w.]+)<\/code>:.*?<\/li>/g)].map((m) => [m[1], m[0]]));
 }
 
 function resultWith(overrides: Partial<ReAuditResult>): ReAuditResult {
@@ -908,9 +915,18 @@ test('a real audit result shows the quote, severity, issue, revision, citation t
   assert.match(markup, /Illegal clause flagged/);
   assert.ok(markup.includes(`Model: ${FAKE_MODEL} (via Nebius Token Factory)`));
   assert.match(markup, /not legal advice/);
-  // The New York City rules retrieved for a deposit clause have no source, so nothing may be linked.
-  assert.doesNotMatch(markup, /<a /);
-  assert.doesNotMatch(markup, /href=/);
+  // A rule is linked only when it has a source. The summary, deposit, late fee, and termination rules
+  // retrieved for a deposit clause have none, so their entries carry no link. The rent-increase rule
+  // retrieved beside them has an official source, and it is the only link.
+  const entries = rulesChecked(markup);
+  for (const id of ['US_NYC.summary', 'US_NYC.securityDeposit', 'US_NYC.lateFees', 'US_NYC.terminationRules']) {
+    assert.ok(entries[id], `${id} is listed`);
+    assert.doesNotMatch(entries[id], /<a /, id);
+    assert.doesNotMatch(entries[id], /href=/, id);
+  }
+  assert.match(entries[RENT_INCREASE_ID] ?? '', new RegExp(`<a href="${RENT_INCREASE_SOURCE}"`));
+  assert.equal((markup.match(/<a /g) ?? []).length, 1);
+  assert.equal((markup.match(/href=/g) ?? []).length, 1);
 });
 
 test('an empty findings list says no issues were found in the supplied text, not that the lease is valid', () => {
@@ -1469,6 +1485,188 @@ test('supporting-rule terms give one result for the accented, uppercase, decompo
     assert.ok(hit.score > 0, id);
   }
   for (const other of others) assert.deepEqual(other, reference);
+});
+
+// ---------------------------------------------------------------------------------------------
+// New York City rent increases and the Good Cause rent standard
+//
+// US_NYC.rentIncreases is a core rule. It gives the Good Cause local rent standard (the lesser of
+// 10% and local CPI plus five percentage points) as a rebuttable presumption that a court assesses,
+// not as an annual cap. It also carries the coverage caveat, keeps rent stabilization a separate
+// regime, and names the statute as its source. These checks run the real retriever and
+// LeaseAuditPrompt with scripted provider replies. They show that the rule, its source, and its
+// citable ID reach the prompt and the result for each kind of increase clause. A scripted reply
+// says nothing about whether a model reasons correctly about the law.
+
+interface RentIncreaseClause {
+  scenario: string;
+  lease: string;
+  quote: string; // the excerpt that a finding on this clause would cite
+  reason: 'category' | 'bm25'; // how the retriever selects the rule
+  alsoRetrieved: string[];
+}
+
+const RENT_INCREASE_CLAUSES: RentIncreaseClause[] = [
+  {
+    scenario: 'a 12% renewal increase with completed significant repairs and higher property taxes',
+    lease: 'On renewal the rent increases by 12% to reflect completed significant repairs and higher property taxes.',
+    quote: 'the rent increases by 12%',
+    reason: 'category',
+    alsoRetrieved: ['US_NYC.terminationRules'],
+  },
+  {
+    scenario: 'an increase on a unit whose Good Cause coverage is unknown',
+    lease: 'The monthly rent increases by 15% at the start of the next lease term.',
+    quote: 'increases by 15%',
+    reason: 'category',
+    alsoRetrieved: [],
+  },
+  {
+    scenario: 'an increase in a rent-stabilized unit',
+    lease: 'This apartment is rent stabilized, and the rent increases by 12% at renewal.',
+    quote: 'the rent increases by 12% at renewal',
+    reason: 'category',
+    alsoRetrieved: ['US_NYC.rentStabilizationRider'],
+  },
+  {
+    scenario: 'a CPI formula',
+    lease: 'Each year the rent increases by the local CPI plus 5%, with no ceiling.',
+    quote: 'increases by the local CPI plus 5%',
+    reason: 'category',
+    alsoRetrieved: [],
+  },
+  {
+    // No routing term such as "increase", so the CPI wording of the rule itself has to match.
+    scenario: 'a CPI formula with no word that routes to rent increases',
+    lease: 'Each year the rent is adjusted by the local CPI plus 5%, with no ceiling.',
+    quote: 'adjusted by the local CPI plus 5%',
+    reason: 'bm25',
+    alsoRetrieved: [],
+  },
+];
+
+const rentIncreaseChunk = () => {
+  const chunk = retriever.getCorpusForCity('US_NYC').find((c) => c.id === RENT_INCREASE_ID);
+  assert.ok(chunk, RENT_INCREASE_ID);
+  return chunk;
+};
+
+test('the rent-increase rule keeps its ID, category, and title, and names the statute as its source', () => {
+  const chunk = rentIncreaseChunk();
+  assert.equal(chunk.cityCode, 'US_NYC');
+  assert.equal(chunk.category, 'rent_increase');
+  assert.equal(chunk.title, 'Rent increases');
+  assert.equal(chunk.source, RENT_INCREASE_SOURCE);
+  assert.equal(new URL(chunk.source).protocol, 'https:');
+});
+
+test('the rent-increase rule gives the Good Cause standard as a rebuttable presumption for a court, not an annual cap', () => {
+  const { text } = rentIncreaseChunk();
+  const distinctions: [string, string][] = [
+    ['formula', 'the lesser of 10% or the local CPI inflation rate plus 5 percentage points'],
+    ['presumption', 'is presumed unreasonable, but the presumption is rebuttable and is not an absolute cap'],
+    ['at or below the standard', 'at or below the standard is not deemed unreasonable under this law, though other laws can still apply'],
+    ['court', 'A court decides whether the increase is unreasonable'],
+    ['property taxes', "the landlord's property tax expenses and recent increases in them"],
+    ['repairs', 'completed significant repairs (cosmetic work does not count'],
+    ['not automatically illegal', 'not automatically illegal or void'],
+    ['coverage', 'Coverage is not automatic for every market-rate unit'],
+    ['stabilized units', 'increases limited to Rent Guidelines Board orders. That regime is separate'],
+    ['market-rate notice', 'written notice is required (30/60/90 days depending on size of increase and length of tenancy)'],
+  ];
+  for (const [name, phrase] of distinctions) assert.ok(text.includes(phrase), `${name}: "${phrase}"`);
+
+  // The old wording called the standard an annual cap, and "CPI + 5%" reads as 5% of CPI.
+  assert.doesNotMatch(text, /annual cap/i);
+  assert.doesNotMatch(text, /CPI \+ 5%/);
+  // The only percentages are the two statutory constants. No year's CPI or threshold is fixed here.
+  for (const percentage of text.match(/\d+(?:\.\d+)?\s*%/g) ?? []) assert.ok(['10%', '5%'].includes(percentage), percentage);
+});
+
+test('each kind of rent-increase clause retrieves the corrected rule, and it reaches the prompt, the closed list, and the result', async () => {
+  const chunk = rentIncreaseChunk();
+  for (const { scenario, lease, quote, reason, alsoRetrieved } of RENT_INCREASE_CLAUSES) {
+    const { chunks } = retriever.retrieveLegalChunks('US_NYC', lease);
+    assert.equal(chunks.find((c) => c.chunk.id === RENT_INCREASE_ID)?.reason, reason, scenario);
+    for (const id of alsoRetrieved) assert.ok(chunks.some((c) => c.chunk.id === id), `${scenario}: ${id}`);
+
+    const cited = finding(`Checks ${RENT_INCREASE_ID}`, {
+      clauseText: quote,
+      category: 'rent_increase',
+      severity: 'warning',
+      legalReference: RENT_INCREASE_ID,
+    });
+    providerCalls = [];
+    providerHandler = () => completion(modelReply('Rent increase check.', [cited]));
+    const result = await leaseAudit.LeaseAuditPrompt(nycListing, lease);
+
+    assert.equal(providerCalls.length, 1, scenario);
+    const { system, user } = providerCalls[0];
+    assert.equal(user, lease, scenario);
+    assert.ok(system.includes(`[${RENT_INCREASE_ID}] ${chunk.title}`), scenario);
+    assert.ok(system.includes(chunk.text), scenario);
+    assert.ok(system.includes(`(Source: ${RENT_INCREASE_SOURCE})`), scenario);
+    const allowed = allowedReferences(system);
+    assert.ok(allowed.includes(RENT_INCREASE_ID), scenario);
+    assert.ok(allowed.includes('US_NYC.summary'), scenario);
+    assert.ok(allowed.every((id) => id.startsWith('US_NYC.')), scenario);
+    for (const id of alsoRetrieved) assert.ok(allowed.includes(id), `${scenario}: ${id}`);
+
+    assert.deepEqual(
+      result.legalSources.find((s) => s.id === RENT_INCREASE_ID),
+      { id: RENT_INCREASE_ID, title: chunk.title, source: RENT_INCREASE_SOURCE },
+      scenario,
+    );
+    assert.deepEqual(result.findings, [verified(cited)], scenario);
+    assert.equal(result.findings[0].clauseText, quote, scenario);
+  }
+});
+
+test('the official source of the rent-increase rule is a link in the clause audit result, beside its title', async () => {
+  for (const { scenario, lease, quote } of RENT_INCREASE_CLAUSES) {
+    providerHandler = () =>
+      completion(
+        modelReply('Source check.', [
+          finding('Source check', { clauseText: quote, category: 'rent_increase', severity: 'warning', legalReference: RENT_INCREASE_ID }),
+        ]),
+      );
+    const controller = controllerFor(nycListing);
+    controller.setClause(lease);
+    await controller.submit();
+    assert.equal(controller.getState().status, 'success', scenario);
+
+    const markup = renderPanel(controller.getState());
+    const entry = rulesChecked(markup)[RENT_INCREASE_ID];
+    assert.ok(entry, scenario);
+    assert.match(entry, /: Rent increases<a /, scenario);
+    assert.match(entry, new RegExp(`<a href="${RENT_INCREASE_SOURCE}"[^>]*rel="noopener noreferrer"`), scenario);
+  }
+});
+
+test('the rent-increase rule and its source never reach the audit of another city', async () => {
+  const otherCodes = ALL_CITY_CODES.filter((code) => code !== 'US_NYC');
+  for (const { scenario, lease } of RENT_INCREASE_CLAUSES) {
+    for (const code of otherCodes) {
+      const { chunks } = retriever.retrieveLegalChunks(code, lease);
+      const label = `${code}: ${scenario}`;
+      assert.ok(chunks.every((c) => c.chunk.cityCode === code), label);
+      assert.ok(chunks.every((c) => c.chunk.id !== RENT_INCREASE_ID && c.chunk.source !== RENT_INCREASE_SOURCE), label);
+    }
+    for (const listing of [londonListing, berlinListing]) {
+      const code = retriever.findLegalContext(listing.cityName)?.code;
+      assert.ok(code && otherCodes.includes(code), listing.cityName);
+      const label = `${code}: ${scenario}`;
+      providerCalls = [];
+      providerHandler = () => completion(modelReply('Nothing to report.', []));
+      const result = await leaseAudit.LeaseAuditPrompt(listing, lease);
+
+      assert.equal(providerCalls.length, 1, label);
+      const { system } = providerCalls[0];
+      assert.ok(allowedReferences(system).every((id) => id.startsWith(`${code}.`)), label);
+      for (const foreign of ['US_NYC', 'Good Cause', 'nysenate.gov']) assert.ok(!system.includes(foreign), `${label} has no ${foreign}`);
+      assert.ok(result.legalSources.every((s) => s.id !== RENT_INCREASE_ID && s.source !== RENT_INCREASE_SOURCE), label);
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------------------------
