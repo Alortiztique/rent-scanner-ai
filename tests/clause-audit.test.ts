@@ -5,8 +5,9 @@
 // and throws for anything else, so no real network call can happen. The API key is a placeholder.
 // The app modules need Vite's transform (extensionless imports, import.meta.env, TSX), so they
 // load through an in-process Vite SSR loader that reads no .env file.
-// These checks cover state handling, request wiring, and rendering. They do not establish that
-// any legal conclusion is correct.
+// These checks cover state handling, request wiring, and rendering. The duplicate-finding checks
+// call LeaseAuditPrompt itself with scripted provider replies. They do not establish that any
+// legal conclusion is correct.
 // Run: node --experimental-strip-types --test tests/clause-audit.test.ts
 import { after, before, beforeEach, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,7 +16,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { ViteDevServer } from 'vite';
-import type { Listing, ReAuditResult } from '../src/types/index.ts';
+import type { AuditFinding, Listing, ReAuditResult } from '../src/types/index.ts';
 import type { ClauseAuditController, ClauseAuditState } from '../src/services/clauseAudit.ts';
 
 const FAKE_BASE_URL = 'https://nebius.invalid/v1';
@@ -138,11 +139,13 @@ async function until(condition: () => boolean) {
 // Module loading and fixtures
 
 type ClauseAuditModule = typeof import('../src/services/clauseAudit.ts');
+type LeaseAuditModule = typeof import('../src/prompts/leaseAuditPrompt.ts');
 type PanelModule = typeof import('../src/components/ClauseAuditPanel.tsx');
 type ModalModule = typeof import('../src/components/ListingModal.tsx');
 
 let server: ViteDevServer;
 let clauseAudit: ClauseAuditModule;
+let leaseAudit: LeaseAuditModule;
 let panel: PanelModule;
 let modal: ModalModule;
 let nycListing: Listing;
@@ -159,6 +162,7 @@ before(async () => {
     optimizeDeps: { noDiscovery: true },
   });
   clauseAudit = (await server.ssrLoadModule('/src/services/clauseAudit.ts')) as ClauseAuditModule;
+  leaseAudit = (await server.ssrLoadModule('/src/prompts/leaseAuditPrompt.ts')) as LeaseAuditModule;
   panel = (await server.ssrLoadModule('/src/components/ClauseAuditPanel.tsx')) as PanelModule;
   modal = (await server.ssrLoadModule('/src/components/ListingModal.tsx')) as ModalModule;
   const { MOCK_LISTINGS } = (await server.ssrLoadModule('/src/data/mockListings.ts')) as {
@@ -475,6 +479,245 @@ test('a network error, which the transport turns into an empty answer, is a visi
   await controller.submit();
   assert.equal(controller.getState().status, 'error');
   assert.equal(controller.getState().result, null);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Duplicate findings in the real auditor
+//
+// These call LeaseAuditPrompt with scripted provider replies. Findings with the same category
+// and the same quote (ignoring case and whitespace) form a group, and one finding per group
+// survives. The winner is chosen after verification: highest verified severity, then fully
+// verified evidence, then the earliest in the model reply.
+
+const DEDUP_LEASE = `${DEPOSIT_CLAUSE} ${OTHER_CLAUSE}`;
+const DEPOSIT_QUOTE = '$3,000 cash security deposit';
+// The same quote as DEPOSIT_QUOTE once case and whitespace are normalized.
+const DEPOSIT_QUOTE_VARIANT = '$3,000  CASH\nsecurity   deposit';
+const ABSENT_QUOTE = 'Tenant forfeits the whole deposit if the unit is not left spotless.';
+const FABRICATED_REF = 'US_NYC.madeUpProvision';
+
+type FullFinding = Required<ScriptedFinding>;
+
+function finding(issue: string, overrides: Partial<ScriptedFinding> = {}): FullFinding {
+  return {
+    clauseText: DEPOSIT_QUOTE,
+    category: 'security_deposit',
+    severity: 'illegal',
+    issue,
+    legalReference: 'US_NYC.securityDeposit',
+    suggestedRevision: `Revision: ${issue}`,
+    ...overrides,
+  };
+}
+
+/** The finding the auditor should return when quote and citation both check out. */
+const verified = (f: FullFinding, overrides: Partial<AuditFinding> = {}) => ({
+  ...f,
+  quoteVerified: true,
+  legalReferenceVerified: true,
+  ...overrides,
+});
+
+/** The finding the auditor should return when the citation is not among the retrieved provisions. */
+const unsupported = (f: FullFinding, overrides: Partial<AuditFinding> = {}) =>
+  verified(f, { legalReference: 'US_NYC.summary', legalReferenceVerified: false, ...overrides });
+
+const unsupportedIllegal = finding('unsupported illegal', { legalReference: FABRICATED_REF });
+const supportedIllegal = finding('supported illegal', { clauseText: DEPOSIT_QUOTE_VARIANT });
+const unsupportedWarning = finding('unsupported warning', { severity: 'warning', legalReference: FABRICATED_REF });
+const supportedWarning = finding('supported warning', { severity: 'warning' });
+const unsupportedInfo = finding('unsupported info', { severity: 'info', legalReference: FABRICATED_REF });
+const supportedInfo = finding('supported info', { severity: 'info' });
+
+function permutations<T>(items: T[]): T[][] {
+  if (items.length <= 1) return [items];
+  return items.flatMap((item, i) =>
+    permutations([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest]),
+  );
+}
+
+/** Runs the real auditor on a scripted model reply and checks the fixture assumptions first. */
+async function auditReply(findings: FullFinding[]): Promise<ReAuditResult> {
+  providerCalls = [];
+  providerHandler = () => completion(modelReply('Duplicate check.', findings));
+  const result = await leaseAudit.LeaseAuditPrompt(nycListing, DEDUP_LEASE);
+  assert.equal(providerCalls.length, 1);
+  const allowed = (providerCalls[0].system.match(/ALLOWED legalReference VALUES \(closed list\): (.*)/)?.[1] ?? '').split(', ');
+  for (const ref of ['US_NYC.summary', 'US_NYC.securityDeposit', 'US_NYC.lateFees']) {
+    assert.ok(allowed.includes(ref), `${ref} is retrieved for the fixture lease`);
+  }
+  assert.ok(!allowed.includes(FABRICATED_REF));
+  return result;
+}
+
+const orderLabel = (findings: FullFinding[]) => findings.map((f) => f.issue).join(' > ');
+
+test('a supported illegal finding survives an unsupported duplicate, whichever comes first', async () => {
+  for (const findings of permutations([unsupportedIllegal, supportedIllegal])) {
+    const result = await auditReply(findings);
+    const label = orderLabel(findings);
+    assert.equal(result.isValid, false, label);
+    assert.deepEqual(result.findings, [verified(supportedIllegal)], label);
+  }
+});
+
+test('an unsupported illegal finding alone is still downgraded and keeps the fallback citation', async () => {
+  const result = await auditReply([unsupportedIllegal]);
+  assert.equal(result.isValid, true);
+  assert.deepEqual(result.findings, [unsupported(unsupportedIllegal, { severity: 'warning' })]);
+});
+
+test('duplicates compete on verified severity, not on the severity the model claimed', async () => {
+  // Verified, the claimed "illegal" is a warning with an unverified citation. It no longer
+  // outranks a supported warning, and the supported info finding is below both.
+  for (const findings of permutations([unsupportedIllegal, supportedWarning, supportedInfo])) {
+    const result = await auditReply(findings);
+    const label = orderLabel(findings);
+    assert.equal(result.isValid, true, label);
+    assert.deepEqual(result.findings, [verified(supportedWarning)], label);
+  }
+});
+
+test('a higher verified severity beats better evidence at a lower severity', async () => {
+  for (const findings of permutations([unsupportedIllegal, supportedInfo])) {
+    const result = await auditReply(findings);
+    assert.deepEqual(result.findings, [unsupported(unsupportedIllegal, { severity: 'warning' })], orderLabel(findings));
+  }
+  for (const findings of permutations([unsupportedWarning, supportedInfo])) {
+    const result = await auditReply(findings);
+    assert.deepEqual(result.findings, [unsupported(unsupportedWarning)], orderLabel(findings));
+  }
+});
+
+test('at equal verified severity, fully verified evidence beats unverified evidence', async () => {
+  const cases: [string, FullFinding, FullFinding][] = [
+    ['warning', unsupportedWarning, supportedWarning],
+    ['info', unsupportedInfo, supportedInfo],
+    ['downgraded illegal against a supported warning', unsupportedIllegal, supportedWarning],
+  ];
+  for (const [name, weak, strong] of cases) {
+    for (const findings of permutations([weak, strong])) {
+      const result = await auditReply(findings);
+      assert.deepEqual(result.findings, [verified(strong)], `${name}: ${orderLabel(findings)}`);
+    }
+  }
+});
+
+test('equivalent duplicates keep the first one with its own fields and merge nothing', async () => {
+  // Two fully verified illegal findings that differ in issue, revision, and citation.
+  const otherIllegal = finding('other supported illegal', { legalReference: 'US_NYC.summary' });
+  for (const findings of permutations([supportedIllegal, otherIllegal])) {
+    const result = await auditReply(findings);
+    assert.equal(result.isValid, false);
+    assert.deepEqual(result.findings, [verified(findings[0])], orderLabel(findings));
+  }
+
+  // Two warnings whose citations are both unsupported.
+  const otherWarning = finding('other unsupported warning', { severity: 'warning', legalReference: 'US_NYC.alsoMadeUp' });
+  for (const findings of permutations([unsupportedWarning, otherWarning])) {
+    const result = await auditReply(findings);
+    assert.deepEqual(result.findings, [unsupported(findings[0])], orderLabel(findings));
+  }
+
+  // The quote is not in the lease, so neither is fully verified, even though one citation is real.
+  const absentFabricated = finding('absent quote, fabricated citation', {
+    clauseText: ABSENT_QUOTE,
+    severity: 'warning',
+    legalReference: FABRICATED_REF,
+  });
+  const absentCited = finding('absent quote, retrieved citation', { clauseText: ABSENT_QUOTE });
+  for (const findings of permutations([absentFabricated, absentCited])) {
+    const result = await auditReply(findings);
+    const [first] = findings;
+    const expected =
+      first === absentCited
+        ? verified(first, { severity: 'warning', quoteVerified: false })
+        : unsupported(first, { quoteVerified: false });
+    assert.equal(result.isValid, true);
+    assert.deepEqual(result.findings, [expected], orderLabel(findings));
+  }
+});
+
+test('different categories and different quotes stay separate, and the result is sorted by verified severity', async () => {
+  const otherCategory = finding('same quote, other category', { category: 'fees_and_charges', severity: 'warning' });
+  const otherQuote = finding('same category, other quote', {
+    clauseText: 'on the day of signing',
+    severity: 'info',
+    legalReference: 'US_NYC.summary',
+  });
+  const lateFee = finding('late fee', {
+    clauseText: '$200 for each day',
+    category: 'late_fee',
+    severity: 'warning',
+    legalReference: 'US_NYC.lateFees',
+  });
+  const summarize = (result: ReAuditResult) => result.findings.map((f) => [f.severity, f.issue]);
+
+  const first = await auditReply([otherQuote, otherCategory, unsupportedIllegal, lateFee, supportedIllegal]);
+  assert.equal(first.isValid, false);
+  assert.deepEqual(summarize(first), [
+    ['illegal', 'supported illegal'],
+    ['warning', 'same quote, other category'],
+    ['warning', 'late fee'],
+    ['info', 'same category, other quote'],
+  ]);
+
+  // Findings of equal severity stay in the order the model returned them.
+  const second = await auditReply([supportedIllegal, lateFee, unsupportedIllegal, otherCategory, otherQuote]);
+  assert.equal(second.isValid, false);
+  assert.deepEqual(summarize(second), [
+    ['illegal', 'supported illegal'],
+    ['warning', 'late fee'],
+    ['warning', 'same quote, other category'],
+    ['info', 'same category, other quote'],
+  ]);
+});
+
+test('isValid is computed from the findings that remain after deduplication', async () => {
+  const unsupportedElsewhere = finding('unsupported illegal elsewhere', {
+    clauseText: '$200 for each day',
+    category: 'late_fee',
+    legalReference: FABRICATED_REF,
+  });
+  const supportedElsewhere = finding('supported illegal elsewhere', {
+    clauseText: '$200 for each day',
+    category: 'late_fee',
+    legalReference: 'US_NYC.lateFees',
+  });
+  const cases: [string, FullFinding[], boolean][] = [
+    ['no findings', [], true],
+    ['only an unsupported illegal', [unsupportedIllegal], true],
+    ['only a supported illegal', [supportedIllegal], false],
+    ['an unsupported and a supported illegal on one quote', [unsupportedIllegal, supportedIllegal], false],
+    ['a supported warning beside an unsupported illegal on one quote', [unsupportedIllegal, supportedWarning], true],
+    ['a supported illegal beside an unsupported illegal on another quote', [unsupportedElsewhere, supportedIllegal], false],
+    ['unsupported duplicates on one quote and a supported illegal on another', [unsupportedIllegal, unsupportedWarning, supportedElsewhere], false],
+  ];
+  for (const [name, scripted, expected] of cases) {
+    for (const findings of permutations(scripted)) {
+      const result = await auditReply(findings);
+      const label = `${name}: ${orderLabel(findings)}`;
+      assert.equal(result.isValid, expected, label);
+      assert.equal(result.isValid, !result.findings.some((f) => f.severity === 'illegal'), label);
+    }
+  }
+});
+
+test('the dossier clause auditor still flags the supported illegal finding behind an unsupported duplicate', async () => {
+  providerHandler = () => completion(modelReply('Deposit is above the cap.', [unsupportedIllegal, supportedIllegal]));
+  const controller = controllerFor(nycListing);
+  controller.setClause(DEDUP_LEASE);
+  await controller.submit();
+
+  const state = controller.getState();
+  assert.equal(state.status, 'success');
+  assert.equal(state.result?.isValid, false);
+  assert.deepEqual(state.result?.findings, [verified(supportedIllegal)]);
+  const markup = renderPanel(state);
+  assert.match(markup, /Illegal clause flagged/);
+  assert.match(markup, /supported illegal/);
+  assert.doesNotMatch(markup, /unsupported illegal/);
+  assert.doesNotMatch(markup, /None is rated illegal/);
 });
 
 // ---------------------------------------------------------------------------------------------

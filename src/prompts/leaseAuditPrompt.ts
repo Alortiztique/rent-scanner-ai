@@ -159,6 +159,31 @@ function verifyFinding(
   };
 }
  
+const SEVERITY_ORDER = { illegal: 0, warning: 1, info: 2 } as const;
+
+const isFullyVerified = (f: AuditFinding) => f.quoteVerified && f.legalReferenceVerified;
+
+// Higher verified severity wins; at equal severity, fully verified evidence wins. Ties keep the incumbent.
+function outranks(candidate: AuditFinding, incumbent: AuditFinding): boolean {
+  if (candidate.severity !== incumbent.severity) {
+    return SEVERITY_ORDER[candidate.severity] < SEVERITY_ORDER[incumbent.severity];
+  }
+  return isFullyVerified(candidate) && !isFullyVerified(incumbent);
+}
+
+// Keeps one already-verified finding per category and quote, in the order the model returned them.
+// Duplicates are compared after verification so an unsupported "illegal" cannot hide a supported one.
+function dedupeVerified(verified: AuditFinding[]): AuditFinding[] {
+  const best = new Map<string, AuditFinding>();
+  for (const f of verified) {
+    const key = `${f.category}|${normalizeWs(f.clauseText)}`;
+    const current = best.get(key);
+    if (!current || outranks(f, current)) best.set(key, f);
+  }
+  const kept = new Set(best.values());
+  return verified.filter((f) => kept.has(f));
+}
+
 export async function LeaseAuditPrompt(listing: Listing, leaseText: string): Promise<ReAuditResult> {
   const ctx = findLegalContext(listing.cityName);
   if (!ctx) throw new UnsupportedJurisdictionError(listing.cityName);
@@ -174,17 +199,9 @@ export async function LeaseAuditPrompt(listing: Listing, leaseText: string): Pro
   const out = await callModelWithRetries(systemPrompt, text);
  
   const fallbackRef = `${ctx.code}.summary`;
-  const seen = new Set<string>();
-  const findings: AuditFinding[] = [];
-  for (const f of out.findings) {
-    const key = `${f.category}|${normalizeWs(f.clauseText)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    findings.push(verifyFinding(f, text, allowedRefs, fallbackRef));
-  }
- 
-  const order = { illegal: 0, warning: 1, info: 2 } as const;
-  findings.sort((a, b) => order[a.severity] - order[b.severity]);
+  const verified = out.findings.map((f) => verifyFinding(f, text, allowedRefs, fallbackRef));
+  const findings = dedupeVerified(verified);
+  findings.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
  
   return {
     isValid: !findings.some((f) => f.severity === 'illegal'),
