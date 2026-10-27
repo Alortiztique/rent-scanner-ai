@@ -8,7 +8,7 @@
 // These checks cover state handling, request wiring, and rendering. They do not establish that
 // any legal conclusion is correct.
 // Run: node --experimental-strip-types --test tests/clause-audit.test.ts
-import { after, before, beforeEach, test } from 'node:test';
+import { after, before, beforeEach, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { createElement } from 'react';
@@ -35,11 +35,8 @@ const NO_NETWORK = (() => {
 }) as typeof fetch;
 globalThis.fetch = NO_NETWORK;
 
-const logLines: string[] = [];
 for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) {
-  console[method] = (...args: unknown[]) => {
-    logLines.push(args.map((arg) => (typeof arg === 'string' ? arg : String(arg))).join(' '));
-  };
+  mock.method(console, method, () => {});
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -177,6 +174,7 @@ before(async () => {
 });
 
 after(async () => {
+  mock.restoreAll();
   await server.close();
 });
 
@@ -185,7 +183,6 @@ beforeEach(() => {
   providerHandler = () => {
     throw new Error('no provider reply scripted');
   };
-  logLines.length = 0;
 });
 
 function controllerFor(listing: Listing): ClauseAuditController {
