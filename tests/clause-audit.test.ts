@@ -5,9 +5,9 @@
 // and throws for anything else, so no real network call can happen. The API key is a placeholder.
 // The app modules need Vite's transform (extensionless imports, import.meta.env, TSX), so they
 // load through an in-process Vite SSR loader that reads no .env file.
-// These checks cover state handling, request wiring, and rendering. The duplicate-finding checks
-// call LeaseAuditPrompt itself with scripted provider replies. They do not establish that any
-// legal conclusion is correct.
+// These checks cover state handling, request wiring, and rendering. The duplicate-finding and
+// whitespace-only-quote checks call LeaseAuditPrompt itself with scripted provider replies. They
+// do not establish that any legal conclusion is correct.
 // Run: node --experimental-strip-types --test tests/clause-audit.test.ts
 import { after, before, beforeEach, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -444,6 +444,11 @@ const FAILURE_CASES: [string, ProviderHandler][] = [
   ['an empty model answer', () => completion('')],
   ['an answer that is not JSON', () => completion('Sorry, I cannot help with that.')],
   ['JSON that fails validation', () => completion(JSON.stringify({ language: 'English', summary: 'x' }))],
+  ['a finding whose quote is only whitespace', () => completion(modelReply('x', [{ clauseText: ' \n\t ' }]))],
+  [
+    'a valid finding beside one whose quote is only whitespace',
+    () => completion(modelReply('x', [{ clauseText: '$3,000 cash security deposit' }, { clauseText: ' ' }])),
+  ],
 ];
 
 for (const [name, handler] of FAILURE_CASES) {
@@ -718,6 +723,126 @@ test('the dossier clause auditor still flags the supported illegal finding behin
   assert.match(markup, /supported illegal/);
   assert.doesNotMatch(markup, /unsupported illegal/);
   assert.doesNotMatch(markup, /None is rated illegal/);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Quotes that are only whitespace
+//
+// A quote that is empty after whitespace normalization is contained in every lease, so it would
+// verify without naming any clause. The real auditor rejects a reply that holds one at schema
+// validation. That is the same retry path as any other invalid reply: a later valid reply
+// recovers, and running out of attempts is a LeaseAuditError. Nothing is dropped or repaired.
+
+const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+// The ECMAScript WhiteSpace and LineTerminator code points, which is what JavaScript trims.
+const BLANK_CODE_POINTS = [
+  0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0xa0, 0x1680, ...range(0x2000, 0x200a), 0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+  0xfeff,
+];
+const BLANK_QUOTES = [
+  '',
+  '   ',
+  ' \t\r\n\v\f ',
+  ...BLANK_CODE_POINTS.map((codePoint) => String.fromCodePoint(codePoint)),
+  String.fromCodePoint(...BLANK_CODE_POINTS),
+];
+const quoteLabel = (quote: string) =>
+  [...quote].map((c) => `U+${c.codePointAt(0)?.toString(16).padStart(4, '0')}`).join(' ') || 'empty string';
+
+const blankFinding = finding('blank quote', { clauseText: ' \n\t ' });
+const BLANK_REPLY = modelReply('Blank quote.', [blankFinding]);
+const RECOVERY_REPLY = modelReply('Recovered.', [supportedWarning]);
+
+/** Runs the real auditor on provider replies in order. The last reply repeats if more are needed. */
+function auditSequence(...replies: string[]): Promise<ReAuditResult> {
+  providerCalls = [];
+  let next = 0;
+  providerHandler = () => completion(replies[Math.min(next++, replies.length - 1)]);
+  return leaseAudit.LeaseAuditPrompt(nycListing, DEDUP_LEASE);
+}
+
+function isAttemptLimitError(error: unknown) {
+  assert.ok(error instanceof leaseAudit.LeaseAuditError);
+  assert.match(error.message, /Lease audit failed after 3 attempts/);
+  assert.match(error.message, /clauseText must not be blank/);
+  return true;
+}
+
+test('a quote of any whitespace is rejected, retried to the attempt limit, and never becomes a finding', async () => {
+  for (const quote of BLANK_QUOTES) {
+    const label = quoteLabel(quote);
+    assert.equal(quote.trim(), '', `${label} is blank under the JavaScript whitespace policy`);
+    // The default fixture finding is "illegal" with a retrieved citation, the case that used to verify.
+    const reply = modelReply('Blank quote.', [finding('blank quote', { clauseText: quote })]);
+    await assert.rejects(auditSequence(reply), isAttemptLimitError, label);
+    assert.equal(providerCalls.length, 3, label);
+  }
+});
+
+test('a valid reply after a blank-quote reply recovers, and a late one does not extend the attempt limit', async () => {
+  const clean = await auditSequence(RECOVERY_REPLY);
+  assert.equal(providerCalls.length, 1);
+  assert.equal(clean.summary, 'Recovered.');
+  assert.deepEqual(clean.findings, [verified(supportedWarning)]);
+
+  for (const blankReplies of [1, 2]) {
+    const recovered = await auditSequence(...Array<string>(blankReplies).fill(BLANK_REPLY), RECOVERY_REPLY);
+    assert.equal(providerCalls.length, blankReplies + 1);
+    assert.deepEqual(recovered, clean);
+  }
+
+  await assert.rejects(auditSequence(BLANK_REPLY, BLANK_REPLY, BLANK_REPLY, RECOVERY_REPLY), isAttemptLimitError);
+  assert.equal(providerCalls.length, 3);
+});
+
+test('a reply that mixes a blank quote with a valid finding is rejected whole, not trimmed to the valid part', async () => {
+  for (const findings of permutations([supportedIllegal, blankFinding])) {
+    const mixed = modelReply('Mixed.', findings);
+    const label = orderLabel(findings);
+
+    await assert.rejects(auditSequence(mixed), isAttemptLimitError, label);
+    assert.equal(providerCalls.length, 3, label);
+
+    const recovered = await auditSequence(mixed, RECOVERY_REPLY);
+    assert.equal(providerCalls.length, 2, label);
+    assert.equal(recovered.summary, 'Recovered.', label);
+    assert.deepEqual(recovered.findings, [verified(supportedWarning)], label);
+    assert.equal(recovered.isValid, true, label);
+  }
+});
+
+test('quotes keep their case, tabs, line breaks, and edge whitespace, and still match ignoring them', async () => {
+  const quotes = [
+    '  $3,000 cash security deposit\n',
+    '\n\t$3,000\tcash\r\nsecurity deposit　',
+    '$3,000 CASH Security DEPOSIT',
+    '$',
+  ];
+  for (const clauseText of quotes) {
+    const f = finding('nonblank quote', { clauseText });
+    const result = await auditReply([f]);
+    assert.deepEqual(result.findings, [verified(f)], quoteLabel(clauseText));
+    assert.equal(result.findings[0].clauseText, clauseText);
+  }
+});
+
+test('after a blank-quote reply, duplicates, absent quotes, and unsupported citations are handled as before', async () => {
+  const absentIllegal = finding('absent quote', { clauseText: ABSENT_QUOTE });
+  const cases: [string, FullFinding[], unknown[], boolean][] = [
+    ['duplicates', [unsupportedIllegal, supportedIllegal], [verified(supportedIllegal)], false],
+    ['fabricated citation', [unsupportedIllegal], [unsupported(unsupportedIllegal, { severity: 'warning' })], true],
+    ['absent quote', [absentIllegal], [verified(absentIllegal, { severity: 'warning', quoteVerified: false })], true],
+  ];
+  for (const [name, scripted, expected, isValid] of cases) {
+    const reply = modelReply('Same reply.', scripted);
+    const direct = await auditSequence(reply);
+    assert.deepEqual(direct.findings, expected, name);
+    assert.equal(direct.isValid, isValid, name);
+
+    const recovered = await auditSequence(BLANK_REPLY, reply);
+    assert.equal(providerCalls.length, 2, name);
+    assert.deepEqual(recovered, direct, name);
+  }
 });
 
 // ---------------------------------------------------------------------------------------------

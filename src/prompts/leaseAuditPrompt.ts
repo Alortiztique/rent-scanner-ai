@@ -29,12 +29,16 @@ export class LeaseAuditError extends Error {
   }
 }
  
+const normalizeWs = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+
+// A quote that normalizes to "" is a substring of every lease, so it can never identify a clause.
+// The check leaves the model's text as sent; only the comparison uses the normalized form.
 const ModelOutputSchema = z.object({
   language: z.string().min(1),
   summary: z.string(),
   findings: z.array(
     z.object({
-      clauseText: z.string().min(1),
+      clauseText: z.string().refine((s) => normalizeWs(s) !== '', 'clauseText must not be blank'),
       category: z.enum(AUDIT_CATEGORIES),
       severity: z.enum(['info', 'warning', 'illegal']),
       issue: z.string().min(1),
@@ -94,8 +98,6 @@ Respond with ONLY a JSON object, no markdown, no extra text, matching exactly:
 }`;
 }
  
-const normalizeWs = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
- 
 // Extracts a JSON object from a raw model reply (tolerates code fences and extra text).
 function extractJson(raw: string): unknown {
   const cleaned = raw.replace(/```(?:json)?/gi, '').trim();
@@ -144,7 +146,8 @@ function verifyFinding(
   allowedRefs: Set<string>,
   fallbackRef: string,
 ): AuditFinding {
-  const quoteVerified = normalizeWs(leaseText).includes(normalizeWs(f.clauseText));
+  const quote = normalizeWs(f.clauseText);
+  const quoteVerified = quote !== '' && normalizeWs(leaseText).includes(quote);
   const legalReferenceVerified = allowedRefs.has(f.legalReference);
  
   // An "illegal" verdict needs both a real quote and a real citation.
