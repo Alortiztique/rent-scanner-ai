@@ -1,14 +1,13 @@
 import React, { useLayoutEffect, useRef, useState } from 'react';
 import type { Listing, RadarListing, ScoutListing } from '../types';
 import { formatCurrency, formatUsd } from '../utils/formatters';
-import { auditListingWithNemotron } from '../services/nebius';
 import { isScoutListing } from '../services/scoutListings';
+import { ClauseAuditSection } from './ClauseAuditPanel';
 import { formatSourceHost } from '../services/tavilySearch';
 import {
   X,
   ShieldCheck,
   ShieldAlert,
-  Sparkles,
   Copy,
   Check,
   ExternalLink,
@@ -213,32 +212,16 @@ const ScoutCandidateDetails: React.FC<{ candidate: ScoutListing; onClose: () => 
 const FixtureDossier: React.FC<{ listing: Listing; onClose: () => void }> = ({ listing, onClose }) => {
   const { dialogRef, initialFocusRef: closeRef } = useModalDialog(onClose);
   const [copied, setCopied] = useState(false);
-  const [customClause, setCustomClause] = useState('');
-  const [isAuditing, setIsAuditing] = useState(false);
-  const [currentAudit, setCurrentAudit] = useState(listing.nemotronAudit);
   const headingId = 'fixture-dossier-title';
 
   const handleCopyNegotiation = () => {
-    const textToCopy = currentAudit?.negotiationScript || listing.nemotronAudit.negotiationScript;
-    navigator.clipboard.writeText(textToCopy);
+    navigator.clipboard.writeText(listing.nemotronAudit.negotiationScript);
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);
   };
 
-  const handleReauditWithCustomClause = async () => {
-    if (!customClause.trim()) return;
-    setIsAuditing(true);
-    try {
-      const updatedAudit = await auditListingWithNemotron(listing, customClause);
-      setCurrentAudit(updatedAudit);
-    } catch (err) {
-      console.error('Error during re-audit:', err);
-    } finally {
-      setIsAuditing(false);
-    }
-  };
-
-  const activeAudit = currentAudit || listing.nemotronAudit;
+  // The listing's generic assessment stays as bundled. The clause audit below is a separate result.
+  const activeAudit = listing.nemotronAudit;
 
   return (
     <dialog ref={dialogRef} aria-labelledby={headingId} className={DIALOG_CLASS}>
@@ -467,31 +450,7 @@ const FixtureDossier: React.FC<{ listing: Listing; onClose: () => void }> = ({ l
           </div>
 
           {/* Interactive Clause / Contract Tester */}
-          <div className="border border-zinc-850 bg-zinc-950 p-4">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-bold text-zinc-300 uppercase flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                CUSTOM LEASE CLAUSE AUDITOR (TEST LIVE VIA NEBIUS)
-              </span>
-              <span className="text-[10px] text-zinc-500">
-                PASTE SUBLET RULES OR CLAUSES
-              </span>
-            </div>
-            <textarea
-              value={customClause}
-              onChange={(e) => setCustomClause(e.target.value)}
-              placeholder="e.g. Landlord demands $1,000 cash deposit without written receipt and 1-week notice eviction clause..."
-              rows={2}
-              className="w-full bg-zinc-900 border border-zinc-800 text-xs text-zinc-100 p-2.5 font-mono focus:outline-none focus:border-emerald-500 placeholder:text-zinc-600 mb-2"
-            />
-            <button
-              onClick={handleReauditWithCustomClause}
-              disabled={isAuditing || !customClause.trim()}
-              className="px-4 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 text-xs font-bold uppercase transition cursor-pointer disabled:opacity-50"
-            >
-              {isAuditing ? 'AUDITING VIA NEBIUS...' : 'RE-AUDIT CLAUSE WITH NEMOTRON'}
-            </button>
-          </div>
+          <ClauseAuditSection listing={listing} />
         </div>
 
         {/* Modal Footer */}
