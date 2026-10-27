@@ -6,7 +6,8 @@
 // The app modules need Vite's transform (extensionless imports, import.meta.env, TSX), so they
 // load through an in-process Vite SSR loader that reads no .env file.
 // These checks cover state handling, request wiring, and rendering. The duplicate-finding and
-// whitespace-only-quote checks call LeaseAuditPrompt itself with scripted provider replies. They
+// whitespace-only-quote checks call LeaseAuditPrompt itself with scripted provider replies. The
+// text-folding checks call the public functions of src/utils/legalRetriever.ts directly. They
 // do not establish that any legal conclusion is correct.
 // Run: node --experimental-strip-types --test tests/clause-audit.test.ts
 import { after, before, beforeEach, mock, test } from 'node:test';
@@ -142,12 +143,14 @@ async function until(condition: () => boolean) {
 
 type ClauseAuditModule = typeof import('../src/services/clauseAudit.ts');
 type LeaseAuditModule = typeof import('../src/prompts/leaseAuditPrompt.ts');
+type RetrieverModule = typeof import('../src/utils/legalRetriever.ts');
 type PanelModule = typeof import('../src/components/ClauseAuditPanel.tsx');
 type ModalModule = typeof import('../src/components/ListingModal.tsx');
 
 let server: ViteDevServer;
 let clauseAudit: ClauseAuditModule;
 let leaseAudit: LeaseAuditModule;
+let retriever: RetrieverModule;
 let panel: PanelModule;
 let modal: ModalModule;
 let nycListing: Listing;
@@ -165,6 +168,7 @@ before(async () => {
   });
   clauseAudit = (await server.ssrLoadModule('/src/services/clauseAudit.ts')) as ClauseAuditModule;
   leaseAudit = (await server.ssrLoadModule('/src/prompts/leaseAuditPrompt.ts')) as LeaseAuditModule;
+  retriever = (await server.ssrLoadModule('/src/utils/legalRetriever.ts')) as RetrieverModule;
   panel = (await server.ssrLoadModule('/src/components/ClauseAuditPanel.tsx')) as PanelModule;
   modal = (await server.ssrLoadModule('/src/components/ListingModal.tsx')) as ModalModule;
   const { MOCK_LISTINGS } = (await server.ssrLoadModule('/src/data/mockListings.ts')) as {
@@ -990,6 +994,73 @@ test('a citation with no matching source title still shows its ID', () => {
   assert.match(markup, /<code[^>]*>US_NYC\.unknown<\/code>/);
   assert.match(markup, /could not be matched to your text/);
   assert.match(markup, /not among the rules checked/);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Legal retrieval text folding
+
+test('city lookup folds accents, case, decomposed marks, and punctuation, and keeps Japanese and Chinese characters', () => {
+  const { findLegalContext, normalizeCityName } = retriever;
+  const resolves = (code: string, names: string[]) => {
+    for (const name of names) assert.equal(findLegalContext(name)?.code, code, name);
+  };
+  resolves('CO_BOG', ['Bogotá D.C.', 'BOGOTÁ D.C.', 'Bogotá dc', 'bogota']);
+  resolves('DE_BER', ['Berlín', 'BERLIN', 'Berlín']);
+  resolves('US_NYC', ['Nueva York', 'NUEVA YORK', 'new-york', 'N.Y.C.']);
+  resolves('US_SF', ['San Francisco, CA', 'S.F.']);
+  resolves('JP_TYO', ['Tokyo', 'Tōkyō', '東京']);
+  assert.equal(normalizeCityName('Tōkyō'), 'tokyo');
+  assert.equal(normalizeCityName('東京'), '東京');
+  // Folding is accents and case only. It does not map compatibility forms, kana, or other
+  // cities onto a supported city.
+  for (const name of ['Ｔｏｋｙｏ', 'とうきょう', '北京', 'Tokyo, Japan']) {
+    assert.equal(findLegalContext(name), null, name);
+  }
+});
+
+test('category detection gives one result for the accented, uppercase, decomposed, and plain spelling of a term', () => {
+  const { detectCategories } = retriever;
+  const spellings: [string[], string][] = [
+    [['Kündigungsfrist', 'KÜNDIGUNGSFRIST', 'Kündigungsfrist', 'kundigungsfrist'], 'termination'],
+    [['Mieterhöhung', 'MIETERHÖHUNG', 'Mieterhöhung', 'mieterhohung'], 'rent_increase'],
+    [['dépôt de garantie', 'DÉPÔT DE GARANTIE', 'dépôt de garantie', 'depot de garantie'], 'security_deposit'],
+    [['pénalité de retard', 'PÉNALITÉ DE RETARD', 'pénalité de retard', 'penalite de retard'], 'late_fee'],
+  ];
+  for (const [forms, category] of spellings) {
+    const expected = detectCategories(forms[0]);
+    assert.deepEqual(expected.map((d) => d.category), [category], forms[0]);
+    for (const form of forms) assert.deepEqual(detectCategories(form), expected, form);
+  }
+  // Short terms keep their word boundaries, and non-Latin text adds no category of its own.
+  assert.deepEqual(detectCategories('IRL').map((d) => d.category), ['rent_increase']);
+  assert.deepEqual(detectCategories('irlx bondage'), []);
+  assert.deepEqual(detectCategories('敷金 礼金 賃貸'), []);
+  assert.deepEqual(detectCategories('敷金 shikikin').map((d) => d.category), ['security_deposit']);
+});
+
+test('retrieval returns the same chunks, scores, and reasons for every spelling of the same words', () => {
+  const { retrieveLegalChunks } = retriever;
+  const [reference, ...others] = [
+    'Kündigungsfrist und Mieterhöhung',
+    'KÜNDIGUNGSFRIST UND MIETERHÖHUNG',
+    'Kündigungsfrist und Mieterhöhung',
+    'kundigungsfrist und mieterhohung',
+  ].map((text) => retrieveLegalChunks('DE_BER', text));
+  assert.deepEqual([...reference.detectedCategories].sort(), ['rent_increase', 'termination']);
+  // The accented words reach the index terms: a score above zero needs the folded token to match.
+  const termination = reference.chunks.find((c) => c.chunk.id === 'DE_BER.terminationRules');
+  assert.ok(termination);
+  assert.equal(termination.reason, 'category');
+  assert.ok(termination.score > 0);
+  for (const other of others) assert.deepEqual(other, reference);
+
+  // Text with no Latin letters gives no signal, so the jurisdiction framework and core rules come back.
+  const japanese = retrieveLegalChunks('JP_TYO', '敷金は2か月分、礼金は1か月分。');
+  assert.deepEqual(japanese.detectedCategories, []);
+  assert.deepEqual(
+    japanese.chunks.map((c) => c.reason),
+    ['always', 'fallback', 'fallback', 'fallback', 'fallback'],
+  );
 });
 
 // ---------------------------------------------------------------------------------------------

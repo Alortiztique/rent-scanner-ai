@@ -1,12 +1,14 @@
 import { LEGAL_KNOWLEDGE_BASE } from "../data/legalContext";
 import { LegalChunk, LegalContext, LegalProvisionCategory, RetrievedChunk } from "../types";
 
+// Folds accents and case for matching: decomposes, drops combining marks, lowercases.
+// City names, tokens, and lexicon terms all go through this first, then add their own stages.
+function foldText(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
 export function normalizeCityName(name: string): string {
-  return name
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\u3040-\u30ff\u4e00-\u9faf]/g, '');
+  return foldText(name).replace(/[^a-z0-9\u3040-\u30ff\u4e00-\u9faf]/g, '');
 }
  
 const CITY_INDEX: Map<string, LegalContext> = (() => {
@@ -139,7 +141,7 @@ const STOPWORDS = new Set([
 
  
 function tokenize(s: string): string[] {
-  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  return foldText(s)
     .split(/[^a-z0-9]+/)
     .filter((t) => t.length > 1 && !STOPWORDS.has(t));
 }
@@ -150,14 +152,14 @@ const LEXICON_REGEX: Record<CoreCategory, RegExp[]> = Object.fromEntries(
   CORE_CATEGORIES.map((cat) => [
     cat,
     CATEGORY_LEXICON[cat].map((term) => {
-      const t = escapeRe(term.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim());
+      const t = escapeRe(foldText(term).trim());
       return new RegExp(t.length <= 4 ? `\\b${t}\\b` : `\\b${t}`);
     }),
   ]),
 ) as Record<CoreCategory, RegExp[]>;
  
 export function detectCategories(text: string): { category: CoreCategory; hits: number }[] {
-  const folded = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const folded = foldText(text);
   return CORE_CATEGORIES.map((category) => ({
     category,
     hits: LEXICON_REGEX[category].filter((re) => re.test(folded)).length,
