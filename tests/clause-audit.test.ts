@@ -9,7 +9,8 @@
 // whitespace-only-quote checks call LeaseAuditPrompt itself with scripted provider replies. The
 // text-folding checks call the public functions of src/utils/legalRetriever.ts directly. The
 // supporting-rule checks for New York City and Berlin do both, and so do the New York City
-// rent-increase checks. They do not establish that any legal conclusion is correct.
+// rent-increase checks and the London, Tokyo, and Bogota rule checks. They do not establish that
+// any legal conclusion is correct.
 // Run: node --experimental-strip-types --test tests/clause-audit.test.ts
 import { after, before, beforeEach, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -159,6 +160,8 @@ let modal: ModalModule;
 let nycListing: Listing;
 let londonListing: Listing;
 let berlinListing: Listing;
+let tokyoListing: Listing;
+let bogotaListing: Listing;
 
 before(async () => {
   server = await createServer({
@@ -186,6 +189,8 @@ before(async () => {
   nycListing = byCity('New York City');
   londonListing = byCity('London');
   berlinListing = byCity('Berlin');
+  tokyoListing = byCity('Tokyo');
+  bogotaListing = byCity('Bogotá');
 });
 
 after(async () => {
@@ -1220,7 +1225,11 @@ const SUPPORTING_RULES: SupportingRule[] = [
 ];
 
 const ALL_CITY_CODES = ['US_NYC', 'UK_LON', 'JP_TYO', 'CO_BOG', 'AE_DXB', 'FR_PAR', 'DE_BER', 'US_SF'];
-const listingFor = (code: string) => (code === 'US_NYC' ? nycListing : berlinListing);
+const listingFor = (code: string) => {
+  const listing = { US_NYC: nycListing, UK_LON: londonListing, JP_TYO: tokyoListing, CO_BOG: bogotaListing, DE_BER: berlinListing }[code];
+  assert.ok(listing, `fixture listing for ${code}`);
+  return listing;
+};
 const ruleFor = (id: string) => {
   const rule = SUPPORTING_RULES.find((r) => r.id === id);
   assert.ok(rule, id);
@@ -1417,7 +1426,7 @@ test('supporting rules stay out of core-topic retrieval, and the no-signal fallb
   for (const id of idsOf('DE_BER', 'Kündigungsfrist und Mieterhöhung')) assert.ok(!supportingIds.has(id), id);
 
   // No signal still returns the summary and the four core rules, in the default budget.
-  for (const code of ['US_NYC', 'DE_BER']) {
+  for (const code of ['US_NYC', 'DE_BER', 'UK_LON', 'JP_TYO', 'CO_BOG']) {
     const result = retrieveLegalChunks(code, 'zzzz qqqq');
     assert.deepEqual(result.detectedCategories, [], code);
     assert.deepEqual(
@@ -1665,6 +1674,352 @@ test('the rent-increase rule and its source never reach the audit of another cit
       assert.ok(allowedReferences(system).every((id) => id.startsWith(`${code}.`)), label);
       for (const foreign of ['US_NYC', 'Good Cause', 'nysenate.gov']) assert.ok(!system.includes(foreign), `${label} has no ${foreign}`);
       assert.ok(result.legalSources.every((s) => s.id !== RENT_INCREASE_ID && s.source !== RENT_INCREASE_SOURCE), label);
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// London, Tokyo, and Bogota rule corrections
+//
+// UK_LON.prohibitedPayments is a new general rule on tenant fees. UK_LON.securityDeposit,
+// JP_TYO.terminationRules, and CO_BOG.securityDeposit keep their IDs and categories and gain the
+// statutory conditions they lacked: the 30-day deposit duties, the Article 38 explanation and
+// notice for a fixed-term lease, and the Article 15 utility-provider guarantee beside the
+// Article 16 ban. Each names an official source. These checks run the real retriever,
+// LeaseAuditPrompt, and panel with scripted provider replies. They show that a clause on each
+// topic retrieves the rule by default, that the rule text with its distinctions, its source, and
+// its citable ID reach the prompt and the result, and that the source is a link. A scripted
+// reply, even one that finds nothing, says nothing about whether a model reasons correctly about
+// the law.
+
+const FEE_RULE = 'UK_LON.prohibitedPayments';
+const LONDON_DEPOSIT_RULE = 'UK_LON.securityDeposit';
+const TOKYO_TERMINATION_RULE = 'JP_TYO.terminationRules';
+const BOGOTA_DEPOSIT_RULE = 'CO_BOG.securityDeposit';
+
+interface CorrectedRule {
+  id: string;
+  category: string; // the retrieval category of the chunk
+  title: string;
+  source: string;
+  anchors: string[]; // phrases the rule text must keep, so a trimmed or swapped text fails
+}
+
+const CORRECTED_RULES: CorrectedRule[] = [
+  {
+    id: FEE_RULE,
+    category: 'fees_and_charges',
+    title: 'Tenant fees and prohibited payments (Tenant Fees Act 2019)',
+    source: 'https://www.legislation.gov.uk/ukpga/2019/4/section/1',
+    anchors: [
+      'a payment is prohibited unless Schedule 1 permits it',
+      'an administrative, referencing or similar fee charged for a tenancy is not permitted',
+      'Schedule 1 permits only: rent',
+      "a tenancy deposit of up to 5 weeks' rent (6 weeks if annual rent is £50,000 or more)",
+      "a holding deposit of up to 1 week's rent",
+      'for rent more than 14 days late, limited to 3% a year above the Bank of England base rate',
+      'This is not a ban on every charge: a permitted payment within its limit is lawful',
+      'but not social housing tenancies or long leases',
+    ],
+  },
+  {
+    id: LONDON_DEPOSIT_RULE,
+    category: 'security_deposit',
+    title: 'Security deposit rules',
+    source: 'https://www.legislation.gov.uk/ukpga/2004/34/section/213',
+    anchors: [
+      "Tenancy deposit capped at 5 weeks of rent (6 weeks if annual rent is £50,000 or more). Holding deposit capped at 1 week of rent",
+      'must be dealt with under a government-authorised tenancy deposit scheme',
+      "Within 30 days of receiving the deposit, the landlord must meet the scheme's initial requirements",
+      "anyone who paid the deposit on the tenant's behalf, the prescribed information about the scheme and the deposit (Housing Act 2004, section 213)",
+      "Both 30-day periods run from the landlord's receipt of the deposit, not from signing or from the start of the tenancy",
+      'They do not turn other payments, such as rent, into deposits',
+    ],
+  },
+  {
+    id: TOKYO_TERMINATION_RULE,
+    category: 'termination',
+    title: 'Termination, renewal and eviction',
+    source: 'https://laws.e-gov.go.jp/law/403AC0000000090',
+    anchors: [
+      "landlords need 'just cause' and generally 6 months' notice to refuse renewal",
+      'only if Article 38 of the Act on Land and Building Leases is met',
+      'such as a notarial deed, or in an electronic record, which counts as writing',
+      'the landlord must give the tenant a document stating that the lease has no renewal and ends when the term expires, and must explain it to the tenant',
+      "With the tenant's consent, the landlord may provide that content electronically instead of on paper",
+      'the no-renewal stipulation is void. The whole lease is not automatically void',
+      'If the term is 1 year or more',
+      'between 1 year and 6 months before the term ends',
+      'the landlord cannot rely on the end of the lease against the tenant',
+      'only after 6 months have passed from the date of the notice',
+      'For a term under 1 year this notice duty does not apply',
+    ],
+  },
+  {
+    id: BOGOTA_DEPOSIT_RULE,
+    category: 'security_deposit',
+    title: 'Security deposit rules',
+    source: 'https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=8738',
+    anchors: [
+      'Article 16 of Ley 820 de 2003 prohibits requiring cash deposits or other real security',
+      'under a different name',
+      'Personal guarantees (codeudor / coarrendatario) are the usual alternative',
+      'Ley 820 has no general ban on paying rent in advance',
+      "Article 15 is a narrow exception for utility bills, not for the landlord's own security",
+      'secure payment to the utility provider',
+      'is given in favour of the provider',
+      'two consecutive billing periods',
+      "the 'cargo fijo por unidad de consumo' at the average of the last three billing periods plus 50%",
+      'The landlord reports the lease to the provider and forwards the constituted guarantee or deposit to it',
+      'Receiving it from the tenant in order to forward it is part of that procedure, and keeping it as the landlord\'s own security is not',
+      'is not the prohibited landlord deposit',
+      "A cash deposit that the landlord keeps as its own security is outside the exception and conflicts with Article 16, even if it is labelled 'utilities'",
+      'An amount above the cap is also outside it',
+    ],
+  },
+];
+
+const ruleById = (id: string) => {
+  const rule = CORRECTED_RULES.find((r) => r.id === id);
+  assert.ok(rule, id);
+  return rule;
+};
+const codeOf = (id: string) => id.slice(0, id.indexOf('.'));
+const correctedChunk = (id: string) => {
+  const chunk = retriever.getCorpusForCity(codeOf(id)).find((c) => c.id === id);
+  assert.ok(chunk, id);
+  return chunk;
+};
+
+interface CorrectionScenario {
+  scenario: string;
+  code: string;
+  lease: string;
+  retrieved: [id: string, reason: 'category' | 'bm25'][]; // corrected rules the default retrieval must include
+  cited: { id: string; quote: string; findingCategory: string; severity: ScriptedFinding['severity'] }[];
+}
+
+const CORRECTION_SCENARIOS: CorrectionScenario[] = [
+  {
+    scenario: 'London general administrative fee before signing',
+    code: 'UK_LON',
+    lease: 'The tenant pays a £400 administrative fee before signing the tenancy agreement.',
+    retrieved: [[FEE_RULE, 'category']],
+    cited: [{ id: FEE_RULE, quote: '£400 administrative fee', findingCategory: 'fees_and_charges', severity: 'illegal' }],
+  },
+  {
+    scenario: 'London administrative fee in Spanish',
+    code: 'UK_LON',
+    lease: 'El inquilino pagará una tarifa administrativa de £400 antes de firmar el contrato.',
+    retrieved: [[FEE_RULE, 'category']],
+    cited: [{ id: FEE_RULE, quote: 'tarifa administrativa de £400', findingCategory: 'fees_and_charges', severity: 'illegal' }],
+  },
+  {
+    scenario: 'London fee beside a security deposit and a holding deposit within the caps',
+    code: 'UK_LON',
+    lease: 'The tenant pays a £400 administrative fee, a security deposit of five weeks of rent and a holding deposit of one week of rent.',
+    retrieved: [[FEE_RULE, 'category'], [LONDON_DEPOSIT_RULE, 'category']],
+    cited: [{ id: FEE_RULE, quote: '£400 administrative fee', findingCategory: 'fees_and_charges', severity: 'illegal' }],
+  },
+  {
+    // No routing term such as "administrative fee", so the rule's keywords have to match.
+    scenario: 'London referencing fee with no word that routes to fees',
+    code: 'UK_LON',
+    lease: 'A £150 referencing fee is payable at signing.',
+    retrieved: [[FEE_RULE, 'bm25']],
+    cited: [{ id: FEE_RULE, quote: '£150 referencing fee', findingCategory: 'fees_and_charges', severity: 'illegal' }],
+  },
+  {
+    scenario: 'London payments that Schedule 1 permits',
+    code: 'UK_LON',
+    lease: 'Rent is paid monthly. The tenant pays reasonable evidenced costs for a lost key, and interest of 3% above the Bank of England base rate on rent more than 14 days late.',
+    retrieved: [[FEE_RULE, 'bm25']],
+    cited: [],
+  },
+  {
+    scenario: 'London deposit protection and prescribed information at 90 days',
+    code: 'UK_LON',
+    lease: 'The landlord will protect the tenancy deposit and supply the prescribed information within 90 days of receipt.',
+    retrieved: [[LONDON_DEPOSIT_RULE, 'category']],
+    cited: [
+      { id: LONDON_DEPOSIT_RULE, quote: 'supply the prescribed information within 90 days of receipt', findingCategory: 'security_deposit', severity: 'illegal' },
+    ],
+  },
+  {
+    scenario: 'London administrative fee and 90-day protection in one clause',
+    code: 'UK_LON',
+    lease: 'The tenant pays a £400 administrative fee before signing. The landlord will protect the tenancy deposit and supply the prescribed information within 90 days of receipt.',
+    retrieved: [[LONDON_DEPOSIT_RULE, 'category'], [FEE_RULE, 'category']],
+    cited: [
+      { id: FEE_RULE, quote: '£400 administrative fee', findingCategory: 'fees_and_charges', severity: 'illegal' },
+      { id: LONDON_DEPOSIT_RULE, quote: 'supply the prescribed information within 90 days of receipt', findingCategory: 'security_deposit', severity: 'illegal' },
+    ],
+  },
+  {
+    scenario: 'Tokyo two-year Teiki lease with no advance explanation and no notice',
+    code: 'JP_TYO',
+    lease: 'This is a Teiki Shakuya fixed-term lease of 2 years that ends on 31 March 2028 with no renewal. The landlord gave no advance explanation and will send no notice of expiry.',
+    retrieved: [[TOKYO_TERMINATION_RULE, 'category']],
+    cited: [{ id: TOKYO_TERMINATION_RULE, quote: 'will send no notice of expiry', findingCategory: 'termination', severity: 'warning' }],
+  },
+  {
+    scenario: 'Tokyo two-year Teiki lease with an explanation and a notice in the statutory window',
+    code: 'JP_TYO',
+    lease: 'This is a Teiki Shakuya fixed-term lease of 2 years. Before signing, the landlord handed the tenant a written explanation that the lease has no renewal and ends on 31 March 2028, and the landlord will send a notice of expiry between 1 year and 6 months before that date.',
+    retrieved: [[TOKYO_TERMINATION_RULE, 'category']],
+    cited: [
+      { id: TOKYO_TERMINATION_RULE, quote: 'will send a notice of expiry between 1 year and 6 months before that date', findingCategory: 'termination', severity: 'info' },
+    ],
+  },
+  {
+    // No routing term such as "renewal" or "notice", so the words of the rule itself have to match.
+    scenario: 'Tokyo fixed-term clause with no word that routes to termination',
+    code: 'JP_TYO',
+    lease: 'The fixed term is 2 years, the lease expires on 31 March 2028 and will not be extended.',
+    retrieved: [[TOKYO_TERMINATION_RULE, 'bm25']],
+    cited: [{ id: TOKYO_TERMINATION_RULE, quote: 'will not be extended', findingCategory: 'termination', severity: 'warning' }],
+  },
+  {
+    scenario: 'Bogota cash deposit for utilities that the landlord keeps',
+    code: 'CO_BOG',
+    lease: 'El arrendatario entregará al arrendador un depósito en efectivo de $1.500.000 por servicios públicos, que el arrendador conservará hasta la entrega del inmueble.',
+    retrieved: [[BOGOTA_DEPOSIT_RULE, 'category']],
+    cited: [
+      { id: BOGOTA_DEPOSIT_RULE, quote: 'depósito en efectivo de $1.500.000 por servicios públicos', findingCategory: 'security_deposit', severity: 'illegal' },
+    ],
+  },
+  {
+    scenario: 'Bogota guarantee in favour of the utility provider',
+    code: 'CO_BOG',
+    lease: 'El arrendatario constituirá una garantía a favor de la empresa de servicios públicos domiciliarios por el equivalente a dos períodos consecutivos de facturación, y el arrendador la remitirá a la empresa.',
+    retrieved: [[BOGOTA_DEPOSIT_RULE, 'category']],
+    cited: [
+      { id: BOGOTA_DEPOSIT_RULE, quote: 'garantía a favor de la empresa de servicios públicos domiciliarios', findingCategory: 'security_deposit', severity: 'info' },
+    ],
+  },
+  {
+    scenario: 'Bogota cash deposit for utilities in English',
+    code: 'CO_BOG',
+    lease: 'The tenant must pay the landlord a cash deposit of COP 1,500,000 for utilities, which the landlord keeps.',
+    retrieved: [[BOGOTA_DEPOSIT_RULE, 'category']],
+    cited: [{ id: BOGOTA_DEPOSIT_RULE, quote: 'cash deposit of COP 1,500,000 for utilities', findingCategory: 'security_deposit', severity: 'illegal' }],
+  },
+];
+
+const scriptedFindings = (cited: CorrectionScenario['cited']) =>
+  cited.map((c) =>
+    finding(`Checks ${c.id}`, { clauseText: c.quote, category: c.findingCategory, severity: c.severity, legalReference: c.id }),
+  );
+
+test('each corrected rule keeps its ID, category, and title, names an official source, and states its statutory distinctions', () => {
+  for (const rule of CORRECTED_RULES) {
+    const chunk = correctedChunk(rule.id);
+    assert.equal(chunk.cityCode, codeOf(rule.id), rule.id);
+    assert.equal(chunk.category, rule.category, rule.id);
+    assert.equal(chunk.title, rule.title, rule.id);
+    assert.equal(chunk.source, rule.source, rule.id);
+    assert.equal(new URL(chunk.source).protocol, 'https:', rule.id);
+    for (const anchor of rule.anchors) assert.ok(chunk.text.includes(anchor), `${rule.id} keeps "${anchor}"`);
+  }
+
+  // The three corrected rules keep their IDs, and London gains one general fee rule after its four.
+  const core = ['summary', 'securityDeposit', 'lateFees', 'rentIncreases', 'terminationRules'];
+  const idsOf = (code: string) => retriever.getCorpusForCity(code).map((c) => c.id);
+  assert.deepEqual(idsOf('UK_LON'), [...core.map((id) => `UK_LON.${id}`), FEE_RULE]);
+  assert.deepEqual(idsOf('JP_TYO'), core.map((id) => `JP_TYO.${id}`));
+  assert.deepEqual(idsOf('CO_BOG'), core.map((id) => `CO_BOG.${id}`));
+
+  // No blanket fee cap: the only amounts are the two Schedule 1 constants.
+  for (const amount of correctedChunk(FEE_RULE).text.match(/£[\d,]+/g) ?? []) assert.ok(['£50,000', '£50'].includes(amount), amount);
+  // The deposit duties run for 30 days from receipt. Nothing here accepts the 90 days of the clause.
+  assert.doesNotMatch(correctedChunk(LONDON_DEPOSIT_RULE).text, /\b90\b/);
+  // A fixed-term lease does not end unconditionally, and nothing here makes paper the only form.
+  assert.doesNotMatch(correctedChunk(TOKYO_TERMINATION_RULE).text, /expire on the stated date without automatic renewal/);
+  assert.doesNotMatch(correctedChunk(TOKYO_TERMINATION_RULE).text, /paper[- ]only|only on paper/i);
+  // The only figure for Bogota is the 50% that the statute adds to its average. No cash amount is set.
+  const bogota = correctedChunk(BOGOTA_DEPOSIT_RULE).text;
+  assert.deepEqual(bogota.match(/\d+(?:\.\d+)?\s*%/g), ['50%']);
+  assert.doesNotMatch(bogota, /\$|COP/);
+  // Ley 820 has no rule against prepaid rent, so the rule does not claim one.
+  assert.doesNotMatch(bogota, /advance payments?[^.]*not allowed|beyond the current rental period/i);
+});
+
+test('a clause on each corrected topic retrieves its rule by default, within the default budget and from its own city only', () => {
+  for (const { scenario, code, lease, retrieved } of CORRECTION_SCENARIOS) {
+    const { chunks, detectedCategories } = retriever.retrieveLegalChunks(code, lease);
+    assert.ok(chunks.length <= 5, `${scenario} fits the default topK`);
+    assert.ok(chunks.reduce((sum, c) => sum + c.chunk.text.length, 0) <= 6000, `${scenario} fits the default maxChars`);
+    assert.ok(chunks.every((c) => c.chunk.cityCode === code), scenario);
+    assert.ok(chunks.some((c) => c.chunk.id === `${code}.summary`), scenario);
+    for (const [id, reason] of retrieved) {
+      assert.equal(chunks.find((c) => c.chunk.id === id)?.reason, reason, `${scenario}: ${id}`);
+      if (reason === 'category') {
+        assert.ok(detectedCategories.includes(ruleById(id).category as (typeof detectedCategories)[number]), `${scenario}: ${id}`);
+      }
+    }
+    for (const other of ALL_CITY_CODES.filter((c) => c !== code)) {
+      const { chunks: foreign } = retriever.retrieveLegalChunks(other, lease);
+      assert.ok(foreign.every((c) => c.chunk.cityCode === other), `${scenario} in ${other}`);
+      for (const [id] of retrieved) assert.ok(!foreign.some((c) => c.chunk.id === id), `${scenario}: ${id} in ${other}`);
+    }
+  }
+});
+
+test('each corrected rule reaches the prompt with its distinctions and the closed citation list, and its source reaches the verified result', async () => {
+  for (const { scenario, code, lease, retrieved, cited } of CORRECTION_SCENARIOS) {
+    const findings = scriptedFindings(cited);
+    providerCalls = [];
+    providerHandler = () => completion(modelReply('Corrected rule check.', findings));
+    const result = await leaseAudit.LeaseAuditPrompt(listingFor(code), lease);
+
+    assert.equal(providerCalls.length, 1, scenario);
+    const { system, user } = providerCalls[0];
+    assert.equal(user, lease, scenario);
+    const allowed = allowedReferences(system);
+    assert.deepEqual(allowed, retriever.retrieveLegalChunks(code, lease).chunks.map((c) => c.chunk.id), scenario);
+    assert.ok(allowed.every((id) => id.startsWith(`${code}.`)), scenario);
+    for (const other of ALL_CITY_CODES.filter((c) => c !== code)) {
+      assert.ok(!system.includes(`${other}.`), `${scenario} has no ${other} rule`);
+    }
+
+    for (const [id] of retrieved) {
+      const rule = ruleById(id);
+      assert.ok(allowed.includes(id), `${scenario}: ${id}`);
+      assert.ok(system.includes(`[${id}] ${rule.title}`), `${scenario}: ${id}`);
+      assert.ok(system.includes(correctedChunk(id).text), `${scenario}: ${id}`);
+      assert.ok(system.includes(`(Source: ${rule.source})`), `${scenario}: ${id}`);
+      for (const anchor of rule.anchors) assert.ok(system.includes(anchor), `${scenario}: ${id} keeps "${anchor}"`);
+      assert.deepEqual(
+        result.legalSources.find((s) => s.id === id),
+        { id, title: rule.title, source: rule.source },
+        `${scenario}: ${id}`,
+      );
+    }
+    assert.deepEqual(result.findings, findings.map((f) => verified(f)), scenario);
+    assert.equal(result.isValid, !cited.some((c) => c.severity === 'illegal'), scenario);
+  }
+});
+
+test('the official source of each retrieved corrected rule is a link in the clause audit result, and rules without a source stay unlinked', async () => {
+  for (const { scenario, code, lease, retrieved, cited } of CORRECTION_SCENARIOS) {
+    providerHandler = () => completion(modelReply('Source check.', scriptedFindings(cited)));
+    const controller = controllerFor(listingFor(code));
+    controller.setClause(lease);
+    await controller.submit();
+    assert.equal(controller.getState().status, 'success', scenario);
+
+    const entries = rulesChecked(renderPanel(controller.getState(), listingFor(code).cityName));
+    for (const [id] of retrieved) {
+      const entry = entries[id];
+      assert.ok(entry, `${scenario}: ${id} is listed`);
+      assert.ok(entry.includes(`<a href="${ruleById(id).source}"`), `${scenario}: ${id}`);
+      assert.match(entry, /rel="noopener noreferrer"/, `${scenario}: ${id}`);
+    }
+    // A rule that has no source, such as the London late-fee rule that rides along, gets no link.
+    for (const { chunk } of retriever.retrieveLegalChunks(code, lease).chunks) {
+      if (chunk.source) continue;
+      assert.ok(entries[chunk.id], `${scenario}: ${chunk.id} is listed`);
+      assert.doesNotMatch(entries[chunk.id], /<a |href=/, `${scenario}: ${chunk.id}`);
     }
   }
 });
