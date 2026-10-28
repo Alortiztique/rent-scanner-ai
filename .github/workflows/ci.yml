@@ -51,6 +51,9 @@ jobs:
       - name: Run offline Scout tests
         run: node --experimental-strip-types --test tests/tavily-search.test.ts tests/scout-listings.test.ts tests/scout-endpoint.test.ts tests/scout-client.test.ts
 
+      - name: Run offline clause audit tests
+        run: node --experimental-strip-types --test tests/clause-audit.test.ts
+
       # The app build does not compile the Pages Function or the Worker, so check them here.
       - name: Typecheck Scout server code
         run: node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --target es2023 --module esnext --moduleResolution bundler --lib es2023,dom --types node --allowImportingTsExtensions worker/scout.ts functions/api/scout.ts
