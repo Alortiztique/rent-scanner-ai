@@ -1681,7 +1681,10 @@ test('the rent-increase rule and its source never reach the audit of another cit
 // ---------------------------------------------------------------------------------------------
 // London, Tokyo, and Bogota rule corrections
 //
-// UK_LON.prohibitedPayments is a new general rule on tenant fees. UK_LON.securityDeposit,
+// UK_LON.prohibitedPayments is a new general rule on tenant fees. It gives a tenant-requested early
+// termination two separate caps: the landlord's loss for a payment to the landlord, and the agent's
+// reasonable costs for a payment to a letting agent that arranges it (Schedule 1, paragraph 7).
+// UK_LON.securityDeposit,
 // JP_TYO.terminationRules, and CO_BOG.securityDeposit keep their IDs and categories and gain the
 // statutory conditions they lacked: the 30-day deposit duties, the Article 38 explanation and
 // notice for a fixed-term lease, and the Article 15 utility-provider guarantee beside the
@@ -1718,6 +1721,12 @@ const CORRECTED_RULES: CorrectedRule[] = [
       "a tenancy deposit of up to 5 weeks' rent (6 weeks if annual rent is £50,000 or more)",
       "a holding deposit of up to 1 week's rent",
       'for rent more than 14 days late, limited to 3% a year above the Bank of England base rate',
+      'a payment on a tenant-requested early termination (Schedule 1, paragraph 7), which has two separate limits',
+      "a payment to the landlord in consideration of the termination, up to the landlord's loss",
+      "a payment to a letting agent in consideration of arranging the termination, up to the agent's reasonable costs in respect of it",
+      "the landlord's loss does not cap the agent's costs, and the agent's costs do not raise the landlord's cap",
+      'Both apply only if the tenant requested the termination before the end of a fixed term (any tenancy that is not periodic), or, for a periodic tenancy, without giving the notice required by the tenancy agreement or by law',
+      'A termination payment outside those conditions, such as a fee for ending a periodic tenancy on the full required notice, is not permitted',
       'This is not a ban on every charge: a permitted payment within its limit is lawful',
       'but not social housing tenancies or long leases',
     ],
@@ -1837,6 +1846,35 @@ const CORRECTION_SCENARIOS: CorrectionScenario[] = [
     cited: [],
   },
   {
+    // The two caps are separate. The agent's payment sits inside its own cap, and no landlord loss
+    // is needed for it. The finding is info: a scripted reply, not a legal determination.
+    scenario: 'London letting agent reasonable costs for a tenant-requested early termination, no landlord loss',
+    code: 'UK_LON',
+    lease: 'The tenant asked to end this periodic tenancy without giving the full notice required by the tenancy agreement. The tenant pays the letting agent £100 for its reasonable costs of arranging the early termination. The landlord suffers no loss.',
+    retrieved: [[FEE_RULE, 'bm25']],
+    cited: [
+      { id: FEE_RULE, quote: '£100 for its reasonable costs of arranging the early termination', findingCategory: 'fees_and_charges', severity: 'info' },
+    ],
+  },
+  {
+    scenario: 'London letting agent charge above its reasonable costs for an early termination',
+    code: 'UK_LON',
+    lease: 'The tenant asked to end this periodic tenancy without giving the full notice required by the tenancy agreement. The letting agent charges £400 to arrange the early termination, although its reasonable costs are £100.',
+    retrieved: [[FEE_RULE, 'bm25']],
+    cited: [
+      { id: FEE_RULE, quote: 'charges £400 to arrange the early termination', findingCategory: 'fees_and_charges', severity: 'illegal' },
+    ],
+  },
+  {
+    scenario: 'London landlord payment above the landlord loss for an early termination',
+    code: 'UK_LON',
+    lease: "The tenant asked to end this fixed-term tenancy before the end of the term and pays the landlord £3,000. The landlord's actual loss from the termination is £1,200.",
+    retrieved: [[FEE_RULE, 'bm25']],
+    cited: [
+      { id: FEE_RULE, quote: 'pays the landlord £3,000', findingCategory: 'fees_and_charges', severity: 'illegal' },
+    ],
+  },
+  {
     scenario: 'London deposit protection and prescribed information at 90 days',
     code: 'UK_LON',
     lease: 'The landlord will protect the tenancy deposit and supply the prescribed information within 90 days of receipt.',
@@ -1931,6 +1969,12 @@ test('each corrected rule keeps its ID, category, and title, names an official s
 
   // No blanket fee cap: the only amounts are the two Schedule 1 constants.
   for (const amount of correctedChunk(FEE_RULE).text.match(/£[\d,]+/g) ?? []) assert.ok(['£50,000', '£50'].includes(amount), amount);
+  // Early termination has two caps, one per payee. The landlord's loss caps only the landlord's payment,
+  // so the old wording that gave the whole item one landlord-loss cap must not return.
+  const fees = correctedChunk(FEE_RULE).text;
+  assert.equal(fees.match(/up to the landlord's loss/g)?.length, 1);
+  assert.equal(fees.match(/up to the agent's reasonable costs/g)?.length, 1);
+  assert.doesNotMatch(fees, /early termination, up to the landlord's loss/);
   // The deposit duties run for 30 days from receipt. Nothing here accepts the 90 days of the clause.
   assert.doesNotMatch(correctedChunk(LONDON_DEPOSIT_RULE).text, /\b90\b/);
   // A fixed-term lease does not end unconditionally, and nothing here makes paper the only form.
