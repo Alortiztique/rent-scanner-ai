@@ -75,3 +75,7 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # Leaflet's BSD license has to ship with its code. Vite copies public/ into dist/, so compare the built copy.
+      - name: Check Leaflet license notice ships in dist
+        run: cmp public/leaflet-LICENSE.txt dist/leaflet-LICENSE.txt

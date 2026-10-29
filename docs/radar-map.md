@@ -39,7 +39,7 @@ Everything on the map is **illustrative demo data**. The listings are bundled fi
 
 | Situation | View |
 |---|---|
-| A city is selected | That city's center at zoom 10, even with no matching listing. The view moves only when the city changes. |
+| A city is selected | That city's center at zoom 10, even with no matching listing. The view resets when the city or map size changes. |
 | All cities, several listings | Fits the listing positions, with padding and a zoom cap of 13. |
 | All cities, one listing | That position at zoom 13. |
 | All cities, no listing | Fits the eight city centers. |
@@ -48,13 +48,19 @@ Everything on the map is **illustrative demo data**. The listings are bundled fi
 Zoom 10 keeps every fixture on screen in a 320 px wide map. The lowest zoom is 0, because framing
 San Francisco to Tokyo on a phone needs it.
 
+When the map's size really changes (a resized window, a rotated phone), the current view is framed
+again with no animation, so a fit made for a wide map does not clip pins once it is narrow. That
+also resets any pan or zoom you made by hand. A re-render that changes no size or view, such as
+opening the dossier or editing a pay figure, leaves the view alone.
+
 ## Using it
 
 - A pin is a button. Tab to it, then press Enter or Space. Enter acts on key down and Space on key
   up, like a native button. A click or tap works too.
 - Closing the dossier with Escape or Close returns focus to the pin or list button you opened it from.
 - The zoom buttons and the keyboard (arrow keys, plus and minus once the map itself has focus) move
-  the map.
+  the map. With `prefers-reduced-motion: reduce` the map does not animate zoom, fades, arrow-key
+  panning or the slide after a drag. The setting is read when the map is created.
 - On touch screens one finger scrolls the page. Two fingers pan and pinch the map, so a swipe that
   starts on the map can still reach the content below it.
 
@@ -104,24 +110,35 @@ Search ranking can change, so a new lookup may not return the same points.
   `https://tile.openstreetmap.org/{z}/{x}/{y}.png`. There is no key and no account.
 - The map shows "© OpenStreetMap contributors", linked to
   `https://www.openstreetmap.org/copyright`, at the bottom left of the map, away from the fixed
-  Copilot button. Map data is © OpenStreetMap contributors under the ODbL.
+  Copilot button. Map data is © OpenStreetMap contributors under the ODbL. Below 640 px the closed
+  Copilot button shows only its icon (its accessible name is unchanged), and the credit stops short
+  of that button's column and wraps, so the button never covers the credit at any scroll position.
 - The code keeps the tile URL exact and leaves the browser's normal Referer and cache behavior
   alone. It adds no proxy, prefetch, cache-busting query or `Referrer-Policy` change.
   See the [OSM tile usage policy](https://operations.osmfoundation.org/policies/tiles/).
 - **Availability.** The public tile server is capacity-limited, best effort and has no SLA. The
   OpenStreetMap Foundation may block heavy or abusive use. This is fine for a low-volume demo. A
   service with real traffic needs a tile provider with terms that fit it.
-- If tiles fail to load, the map shows a "Basemap tiles are unavailable" notice. Pins, the list and
-  Grid keep working. If the map library itself fails to load, the map says so and the list and
-  Grid keep working.
+- If tiles fail to load, the map shows a "Basemap tiles are unavailable for some or all of this map"
+  notice. It stays up while any failed tile is still on the map. A different tile loading does not
+  clear it. It goes when the failed tiles load or leave the map (you pan or zoom away from them).
+  The map does not retry tiles itself. Pins, the list and Grid keep working. If the map library
+  itself fails to load, the map says so and the list and Grid keep working.
 - The basemap is dark through a CSS filter on the tile pane only. Pins, the diamond rings, the zoom
   buttons and the attribution keep their own colors.
 
 ## Leaflet
 
-The map uses [Leaflet](https://leafletjs.com) 1.9.4 directly (BSD-2-Clause, © 2010-2023 Vladimir
+The map uses [Leaflet](https://leafletjs.com) 1.9.4 directly (BSD-2-Clause, © 2010-2023 Volodymyr
 Agafonkin, © 2010-2011 CloudMade), with `@types/leaflet` 1.9.22 as a dev dependency. The map keeps
 Leaflet's own "Leaflet" credit in its attribution.
+
+The BSD license requires its copyright notice, conditions and disclaimer to travel with the code.
+The minified build drops Leaflet's header comment, so the full license text is
+`public/leaflet-LICENSE.txt`, a copy of the `LICENSE` file in the installed `leaflet@1.9.4` package.
+Vite copies `public/` into the build, so it is served at `/leaflet-LICENSE.txt`, and the map links
+to it ("Leaflet license notice"). If you upgrade Leaflet, copy its new `LICENSE` over that file.
+The tests fail if the two differ.
 
 Leaflet reads `window` and `document` when its module runs, so it is imported with a dynamic
 `import()` from an effect after the map mounts in a browser. Its stylesheet is imported in
@@ -133,6 +150,9 @@ code is a separate chunk in the production build. The map is unmounted when you 
 `tests/map-visualization.test.ts` is an offline `node:test` file and runs in CI. It covers
 coordinate coverage and validity, tier boundaries (74, 75, 89, 90), the context-marker rule, the
 view that is chosen, the tile constants, server rendering, and that Leaflet is only a dynamic import.
+It also covers the tile-failure notice rule, framing again after a resize (against a fake map),
+the reduced-motion pan wrapper, the shipped Leaflet license, and the contrast of the map's text colors.
+CI also compares `dist/leaflet-LICENSE.txt` with `public/leaflet-LICENSE.txt` after the build.
 
 Run it with:
 

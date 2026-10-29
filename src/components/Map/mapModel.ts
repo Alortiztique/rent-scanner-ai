@@ -165,6 +165,9 @@ export type MapViewPlan =
   | { kind: 'center'; key: string; center: GeoPoint; zoom: number }
   | { kind: 'bounds'; key: string; points: GeoPoint[] };
 
+/** Public path of the Leaflet license notice. Vite copies everything in public/ into the build. */
+export const LEAFLET_LICENSE_FILE = 'leaflet-LICENSE.txt';
+
 function distinctPoints(points: readonly GeoPoint[]): GeoPoint[] {
   const seen = new Set<string>();
   return points.filter((p) => {
@@ -210,4 +213,116 @@ export function planMapView(
     return { kind: 'center', key: `point:${pointsKey(points)}`, center: points[0], zoom: CLOSE_ZOOM_CAP };
   }
   return { kind: 'bounds', key: `bounds:${pointsKey(points)}`, points };
+}
+
+/**
+ * Tracks which basemap tile elements are failed right now, so the "tiles unavailable" notice follows
+ * the layer's real state. Another tile loading says nothing about a failed one and never
+ * clears its failure. There are no automatic retries: a failed tile stays
+ * failed until that element loads or Leaflet drops it on pan or zoom. The set holds at
+ * most the tiles on the layer at once, and needs no timer or retry logic.
+ */
+export interface TileFailureTracker {
+  /** The layer's tileerror. */
+  fail(tile: object): void;
+  /** The layer's tileload or tileunload. */
+  release(tile: object): void;
+}
+
+export function createTileFailureTracker(onChange: (anyFailed: boolean) => void): TileFailureTracker {
+  const failed = new Set<object>();
+  let reported = false;
+  const report = () => {
+    const now = failed.size > 0;
+    if (now === reported) return;
+    reported = now;
+    onChange(now);
+  };
+  return {
+    fail(tile) {
+      failed.add(tile);
+      report();
+    },
+    release(tile) {
+      if (failed.delete(tile)) report();
+    },
+  };
+}
+
+/** The part of a Leaflet map that framing uses, so the framing can be tested without Leaflet. */
+export interface FramingMap {
+  getSize(): { x: number; y: number };
+  invalidateSize(options: { animate: boolean }): unknown;
+  setView(center: [number, number], zoom: number, options: { animate: boolean }): unknown;
+  fitBounds(
+    bounds: Array<[number, number]>,
+    options: { padding: [number, number]; maxZoom: number; animate: boolean },
+  ): unknown;
+}
+
+export interface MapFramer {
+  /** Frames a plan the map is not already showing. Only a later plan animates, and only if motion is allowed. */
+  show(plan: MapViewPlan, allowMotion: boolean): void;
+  /** For when the container may have resized. Frames the current plan again if the size really changed. */
+  resize(): void;
+}
+
+/**
+ * Keeps the map framed on the latest plan. A plan is applied once per key, so a render that changes
+ * nothing leaves the user's pan and zoom alone. A real size change applies the current plan again
+ * with no animation: a fit made for a wide map clips pins once the map is narrow. The size the
+ * frame was made for is remembered here, because Leaflet's own window resize handler can update the
+ * map's size before any observer of ours runs, and a comparison against that size would see no change.
+ */
+export function createMapFramer(map: FramingMap): MapFramer {
+  let plan: MapViewPlan | null = null;
+  let framedFor = '';
+  const measure = () => {
+    map.invalidateSize({ animate: false });
+    const { x, y } = map.getSize();
+    return { empty: x === 0 || y === 0, key: `${x}x${y}` };
+  };
+  const frame = (current: MapViewPlan, animate: boolean) => {
+    const size = measure();
+    if (current.kind === 'center') {
+      map.setView([current.center.lat, current.center.lng], current.zoom, { animate });
+    } else {
+      map.fitBounds(
+        current.points.map((p): [number, number] => [p.lat, p.lng]),
+        { padding: [FIT_PADDING_PX, FIT_PADDING_PX], maxZoom: CLOSE_ZOOM_CAP, animate },
+      );
+    }
+    framedFor = size.key;
+  };
+  return {
+    show(next, allowMotion) {
+      if (plan?.key === next.key) return;
+      const animate = plan !== null && allowMotion;
+      plan = next;
+      frame(next, animate);
+    },
+    resize() {
+      const size = measure();
+      // A hidden map has no size to fit. It is framed again once it has one.
+      if (!plan || size.empty || size.key === framedFor) return;
+      frame(plan, false);
+    },
+  };
+}
+
+type PanOptions = { animate?: boolean; duration?: number; easeLinearity?: number; noMoveStart?: boolean };
+
+export interface PannableMap<Offset> {
+  panBy(offset: Offset, options?: PanOptions): unknown;
+}
+
+/**
+ * Makes this one map pan without a slide. Leaflet's keyboard handler calls panBy(offset) with no
+ * way to turn the animation off, so the instance's panBy is wrapped. Only this map object changes,
+ * never Leaflet's prototype. Drag inertia also ends in panBy, and forcing that instant would throw
+ * the map the whole inertial distance at once, so a map that uses this is made with inertia: false.
+ */
+export function disablePanAnimation<Offset>(map: PannableMap<Offset>): void {
+  const panBy = map.panBy;
+  map.panBy = (offset, options) => panBy.call(map, offset, { ...options, animate: false });
 }

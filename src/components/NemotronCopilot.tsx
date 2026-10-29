@@ -84,7 +84,8 @@ export const NemotronCopilot: React.FC<NemotronCopilotProps> = ({ currentCity })
         >
           <div className="w-2.5 h-2.5 bg-emerald-500 animate-ping rounded-full"></div>
           <Cpu className="w-4 h-4 text-emerald-400" />
-          <span>NEMOTRON TENANT COPILOT</span>
+          {/* Below sm only the dot and icon show, so the button cannot cover the map's OpenStreetMap credit. The name stays for assistive technology. */}
+          <span className="sr-only sm:not-sr-only">NEMOTRON TENANT COPILOT</span>
         </button>
       ) : (
         <div className="w-80 sm:w-96 bg-zinc-950 border-2 border-emerald-500 shadow-[6px_6px_0px_0px_#000] flex flex-col h-[520px]">

@@ -37,6 +37,8 @@ type ModelModule = typeof import('../src/components/Map/mapModel.ts');
 type CoordinatesModule = typeof import('../src/data/mapCoordinates.ts');
 type MapModule = typeof import('../src/components/Map/RentMap.tsx');
 type AppModule = typeof import('../src/App.tsx');
+type CopilotModule = typeof import('../src/components/NemotronCopilot.tsx');
+type FramingMap = import('../src/components/Map/mapModel.ts').FramingMap;
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 
@@ -47,6 +49,7 @@ let model: ModelModule;
 let coordinates: CoordinatesModule;
 let mapModule: MapModule;
 let app: AppModule;
+let copilotModule: CopilotModule;
 
 before(async () => {
   server = await createServer({
@@ -64,6 +67,7 @@ before(async () => {
   coordinates = (await server.ssrLoadModule('/src/data/mapCoordinates.ts')) as CoordinatesModule;
   mapModule = (await server.ssrLoadModule('/src/components/Map/RentMap.tsx')) as MapModule;
   app = (await server.ssrLoadModule('/src/App.tsx')) as AppModule;
+  copilotModule = (await server.ssrLoadModule('/src/components/NemotronCopilot.tsx')) as CopilotModule;
 });
 
 after(async () => {
@@ -634,6 +638,379 @@ test('each list button opens the dossier for exactly its own listing (callback w
     MOCK_LISTINGS.map((l) => l.id),
   );
   assert.ok(selected.every((l, i) => l === MOCK_LISTINGS[i]), 'the exact fixture object is passed on');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Basemap tile failures: the notice follows the tiles that are failed, not the last event
+
+test('a tile that loads does not clear the notice while another tile is still failed', () => {
+  const states: boolean[] = [];
+  const tracker = model.createTileFailureTracker((failed) => states.push(failed));
+  const [a, b, c] = [{}, {}, {}];
+  // The order a flaky server gives: fail, ok, fail, ok.
+  tracker.fail(a);
+  tracker.release(b); // a different tile loaded
+  tracker.fail(c);
+  tracker.release({}); // and another
+  assert.deepEqual(states, [true], 'the notice came up once and no load took it down');
+  tracker.release(a);
+  assert.deepEqual(states, [true], 'one failed tile is still on the layer');
+  tracker.release(c);
+  assert.deepEqual(states, [true, false], 'the notice goes when the last failed tile is gone');
+});
+
+test('a failed tile that is unloaded, or that later loads, no longer counts', () => {
+  const states: boolean[] = [];
+  const tracker = model.createTileFailureTracker((failed) => states.push(failed));
+  const tile = {};
+  tracker.fail(tile);
+  tracker.fail(tile); // the same element reporting again is still one failed tile
+  tracker.release(tile); // tileunload: the user panned or zoomed it away
+  assert.deepEqual(states, [true, false]);
+  tracker.release(tile); // an unload after a load is not a second recovery
+  assert.deepEqual(states, [true, false]);
+  tracker.fail(tile);
+  tracker.release(tile); // tileload for the same element
+  assert.deepEqual(states, [true, false, true, false]);
+});
+
+test('the failed set holds only tiles that are failed, so it cannot outgrow the tiles on the layer', () => {
+  const states: boolean[] = [];
+  const tracker = model.createTileFailureTracker((failed) => states.push(failed));
+  // 1,000 tiles fail and are each unloaded in turn, as a long pan would do.
+  for (let i = 0; i < 1000; i++) {
+    const tile = {};
+    tracker.fail(tile);
+    tracker.release(tile);
+  }
+  assert.equal(states.length, 2000, 'one report per change');
+  assert.equal(states.at(-1), false);
+  // Nothing is left behind: a tile loading now has nothing to clear and reports nothing.
+  tracker.release({});
+  assert.equal(states.length, 2000);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Framing follows the map's size
+
+interface FakeCall {
+  op: 'setView' | 'fitBounds';
+  animate: boolean;
+  args: unknown[];
+}
+
+/** A map whose size Leaflet only learns in invalidateSize, like the real one. */
+function fakeFramingMap(width: number, height: number) {
+  let real = { x: width, y: height };
+  let known = { ...real };
+  const calls: FakeCall[] = [];
+  const map: FramingMap = {
+    getSize: () => ({ ...known }),
+    invalidateSize: () => {
+      known = { ...real };
+    },
+    setView: (center, zoom, options) => {
+      calls.push({ op: 'setView', animate: options.animate, args: [center, zoom] });
+    },
+    fitBounds: (bounds, options) => {
+      calls.push({ op: 'fitBounds', animate: options.animate, args: [bounds, options.padding, options.maxZoom] });
+    },
+  };
+  return {
+    map,
+    calls,
+    /** The container changes size and nothing has told the map yet. */
+    resizeTo(x: number, y: number) {
+      real = { x, y };
+    },
+    /** What Leaflet's own window resize handler does, before any observer of ours runs. */
+    leafletNoticesResize() {
+      known = { ...real };
+    },
+  };
+}
+
+const allCitiesPlan = () => model.planMapView('all', plottedFor(MOCK_LISTINGS), coordinates.CITY_POSITIONS);
+const londonPlan = () =>
+  model.planMapView('london', plottedFor(MOCK_LISTINGS.filter((l) => l.cityId === 'london')), coordinates.CITY_POSITIONS);
+
+test('a plan is applied once, so a render that changes nothing never resets the view', () => {
+  const fake = fakeFramingMap(1220, 476);
+  const framer = model.createMapFramer(fake.map);
+  framer.show(allCitiesPlan(), true);
+  assert.equal(fake.calls.length, 1);
+  assert.equal(fake.calls[0].op, 'fitBounds');
+  assert.equal(fake.calls[0].animate, false, 'the first view is placed in one step');
+  // A dossier opening, a pay edit or a new listings array produces an equal plan with the same key.
+  framer.show(allCitiesPlan(), true);
+  framer.show(allCitiesPlan(), true);
+  assert.equal(fake.calls.length, 1);
+});
+
+test('a later plan animates only if motion is allowed', () => {
+  for (const [allowMotion, expected] of [
+    [true, true],
+    [false, false],
+  ] as const) {
+    const fake = fakeFramingMap(1220, 476);
+    const framer = model.createMapFramer(fake.map);
+    framer.show(allCitiesPlan(), allowMotion);
+    framer.show(londonPlan(), allowMotion);
+    assert.deepEqual(
+      fake.calls.map((c) => [c.op, c.animate]),
+      [
+        ['fitBounds', false],
+        ['setView', expected],
+      ],
+    );
+  }
+});
+
+test('narrowing the map frames the current plan again, with no animation', () => {
+  const fake = fakeFramingMap(1220, 476);
+  const framer = model.createMapFramer(fake.map);
+  framer.show(allCitiesPlan(), true);
+
+  for (const [width, height] of [
+    [354, 316], // a 390 px phone
+    [324, 316], // a 360 px phone
+    [1220, 476], // and back to desktop
+  ]) {
+    fake.resizeTo(width, height);
+    framer.resize();
+  }
+  assert.equal(fake.calls.length, 4, 'one frame for the first view and one for each real size change');
+  for (const call of fake.calls.slice(1)) {
+    assert.equal(call.op, 'fitBounds');
+    assert.equal(call.animate, false);
+    assert.deepEqual(call.args, fake.calls[0].args, 'the same listing points, padding and cap are fitted again');
+  }
+});
+
+test('the plan used after a resize is the latest one, not the one the map started with', () => {
+  const fake = fakeFramingMap(1220, 476);
+  const framer = model.createMapFramer(fake.map);
+  framer.show(allCitiesPlan(), true);
+  framer.show(londonPlan(), true);
+  fake.resizeTo(354, 316);
+  framer.resize();
+  const last = fake.calls.at(-1)!;
+  assert.equal(last.op, 'setView');
+  assert.deepEqual(last.args[0], [coordinates.CITY_POSITIONS.london.lat, coordinates.CITY_POSITIONS.london.lng]);
+  assert.equal(last.args[1], model.CITY_ZOOM);
+  assert.equal(last.animate, false);
+});
+
+test('a resize Leaflet already noticed itself still frames the plan once, and an unchanged size does not', () => {
+  const fake = fakeFramingMap(1220, 476);
+  const framer = model.createMapFramer(fake.map);
+  framer.show(allCitiesPlan(), true);
+  // The window resize handler runs first and updates the map's size, so the size the observer reads
+  // already equals the new one. A comparison against that size would see nothing to do.
+  fake.resizeTo(354, 316);
+  fake.leafletNoticesResize();
+  framer.resize();
+  assert.equal(fake.calls.length, 2, 'framed for the new size');
+  // The observer firing again, or for a reason that is not a size change, must not touch a view the
+  // user has since panned or zoomed, and must not start a loop.
+  framer.resize();
+  framer.resize();
+  assert.equal(fake.calls.length, 2);
+});
+
+test('nothing is framed before a plan exists, and a map with no size is framed once it has one', () => {
+  const fake = fakeFramingMap(1220, 476);
+  const framer = model.createMapFramer(fake.map);
+  fake.resizeTo(800, 476);
+  framer.resize();
+  assert.equal(fake.calls.length, 0, 'no plan yet');
+
+  framer.show(allCitiesPlan(), true);
+  fake.resizeTo(0, 0);
+  framer.resize();
+  assert.equal(fake.calls.length, 1, 'a hidden map has nothing to fit');
+  fake.resizeTo(354, 316);
+  framer.resize();
+  assert.equal(fake.calls.length, 2);
+});
+
+test('the all-cities frame keeps every fixture inside the map at desktop, 390, 360 and 320 px wide, and back', () => {
+  // Leaflet's fitBounds with whole zoom levels: the zoom is the largest one at which the listing
+  // bounds fit the padded map, and the view centers on the bounds. Page padding and the map border
+  // leave 354, 324 and 284 px of map for a 390, 360 and 320 px screen.
+  const points = MOCK_LISTINGS.map((l) => coordinates.LISTING_POSITIONS[l.id]);
+  const mercatorX = (lng: number, zoom: number) => ((lng + 180) / 360) * 256 * 2 ** zoom;
+  const mercatorY = (lat: number, zoom: number) =>
+    (0.5 - Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360)) / (2 * Math.PI)) * 256 * 2 ** zoom;
+  const fitZoom = (width: number, height: number) => {
+    const xs = points.map((p) => mercatorX(p.lng, 0));
+    const ys = points.map((p) => mercatorY(p.lat, 0));
+    const spanX = Math.max(...xs) - Math.min(...xs);
+    const spanY = Math.max(...ys) - Math.min(...ys);
+    const scale = Math.min((width - 2 * model.FIT_PADDING_PX) / spanX, (height - 2 * model.FIT_PADDING_PX) / spanY);
+    return Math.max(model.MAP_MIN_ZOOM, Math.min(model.CLOSE_ZOOM_CAP, Math.floor(Math.log2(scale))));
+  };
+  for (const [width, height] of [
+    [1220, 476],
+    [354, 316],
+    [324, 316],
+    [284, 316],
+    [1220, 476],
+  ]) {
+    const zoom = fitZoom(width, height);
+    const xs = points.map((p) => mercatorX(p.lng, zoom));
+    const ys = points.map((p) => mercatorY(p.lat, zoom));
+    const centerX = (Math.min(...xs) + Math.max(...xs)) / 2;
+    const centerY = (Math.min(...ys) + Math.max(...ys)) / 2;
+    // A 40 px pin is centered on its point, so 20 px of it must stay on the map.
+    MOCK_LISTINGS.forEach((listing, index) => {
+      assert.ok(Math.abs(xs[index] - centerX) <= width / 2 - 20, `${listing.id} fits across ${width}px at zoom ${zoom}`);
+      assert.ok(Math.abs(ys[index] - centerY) <= height / 2 - 20, `${listing.id} fits down ${height}px at zoom ${zoom}`);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Reduced motion
+
+test('under reduced motion a pan is never animated, whatever options the caller passes', () => {
+  const seen: Array<{ offset: [number, number]; options?: Record<string, unknown> }> = [];
+  const fake = {
+    panBy(offset: [number, number], options?: Record<string, unknown>) {
+      seen.push({ offset, options });
+      return 'result';
+    },
+  };
+  const original = fake.panBy;
+  model.disablePanAnimation(fake);
+  assert.notEqual(fake.panBy, original, 'this one object is wrapped');
+
+  // What Leaflet's arrow keys call, plain and with Shift: an offset and no options.
+  assert.equal(fake.panBy([80, 0]), 'result', 'the return value is passed on');
+  assert.equal(fake.panBy([0, -240]), 'result');
+  // A caller that asks for an animation anyway, as drag inertia does, still gets none.
+  fake.panBy([5, 5], { animate: true, duration: 0.5, noMoveStart: true });
+  assert.deepEqual(seen, [
+    { offset: [80, 0], options: { animate: false } },
+    { offset: [0, -240], options: { animate: false } },
+    { offset: [5, 5], options: { animate: false, duration: 0.5, noMoveStart: true } },
+  ]);
+});
+
+test('disablePanAnimation changes only the map it is given, and the wrapped pan still runs on that map', () => {
+  class FakeMap {
+    calls = 0;
+    panBy() {
+      this.calls += 1;
+    }
+  }
+  const quiet = new FakeMap();
+  const other = new FakeMap();
+  model.disablePanAnimation(quiet);
+  assert.equal(other.panBy, FakeMap.prototype.panBy, 'the other map and the class are untouched');
+  other.panBy();
+  quiet.panBy();
+  assert.equal(other.calls, 1);
+  assert.equal(quiet.calls, 1);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Leaflet license notice
+
+const normalizeEol = (text: string) => text.replace(/\r\n/g, '\n');
+
+test('the Leaflet license notice ships as a public file that matches the installed leaflet exactly', () => {
+  const shipped = normalizeEol(readFileSync(`${root}public/leaflet-LICENSE.txt`, 'utf8'));
+  const installed = normalizeEol(readFileSync(`${root}node_modules/leaflet/LICENSE`, 'utf8'));
+  assert.equal(shipped, installed);
+  // What the BSD license says must travel with the code, spelled as the author has it.
+  assert.match(shipped, /Copyright \(c\) 2010-2023, Volodymyr Agafonkin/);
+  assert.match(shipped, /Copyright \(c\) 2010-2011, CloudMade/);
+  assert.match(shipped, /Redistributions in binary form must reproduce the above copyright notice/);
+  assert.match(shipped, /THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"/);
+
+  // The notice belongs to the version that ships.
+  const pinned = (JSON.parse(readFileSync(`${root}package.json`, 'utf8')) as { dependencies: Record<string, string> })
+    .dependencies.leaflet;
+  const version = (JSON.parse(readFileSync(`${root}node_modules/leaflet/package.json`, 'utf8')) as { version: string })
+    .version;
+  assert.equal(version, pinned);
+});
+
+test('Vite copies public/ into the build, so the notice reaches dist', () => {
+  const config = readFileSync(`${root}vite.config.ts`, 'utf8');
+  assert.doesNotMatch(config, /publicDir|copyPublicDir/, 'the default public/ copy is not switched off or moved');
+  assert.equal(model.LEAFLET_LICENSE_FILE, 'leaflet-LICENSE.txt');
+});
+
+test('the map links its license notice and the docs name where it ships', () => {
+  const markup = renderMap(MOCK_LISTINGS);
+  const link = markup.match(/<a href="([^"]+)"[^>]*>([^<]+)<\/a>/);
+  assert.ok(link, 'the map section has a link');
+  assert.equal(link[1], '/leaflet-LICENSE.txt');
+  assert.equal(link[2], 'Leaflet license notice');
+  assert.match(markup, /rel="noopener noreferrer"/);
+  assert.ok(readFileSync(`${root}docs/radar-map.md`, 'utf8').includes('public/leaflet-LICENSE.txt'));
+});
+
+// ---------------------------------------------------------------------------------------------
+// Map helper text contrast
+
+/** Tailwind v4 palette entries are oklch. This is their sRGB relative luminance, as WCAG defines it. */
+function paletteLuminance(name: string): number {
+  if (name === 'black') return 0;
+  const theme = readFileSync(`${root}node_modules/tailwindcss/theme.css`, 'utf8');
+  const entry = theme.match(new RegExp(`--color-${name}:\\s*oklch\\(([\\d.]+)%\\s+([\\d.]+)\\s+([\\d.]+)\\)`));
+  assert.ok(entry, `${name} is in the Tailwind palette`);
+  const lightness = Number(entry[1]) / 100;
+  const hue = (Number(entry[3]) * Math.PI) / 180;
+  const a = Number(entry[2]) * Math.cos(hue);
+  const b = Number(entry[2]) * Math.sin(hue);
+  const l = (lightness + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m = (lightness - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s = (lightness - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  const linear = [
+    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
+  ].map((value) => Math.min(1, Math.max(0, value)));
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+
+const contrastRatio = (foreground: string, background: string) => {
+  const [lighter, darker] = [paletteLuminance(foreground), paletteLuminance(background)].sort((x, y) => y - x);
+  return (lighter + 0.05) / (darker + 0.05);
+};
+
+test('the contrast calculation reproduces the 4.35:1 a browser measured for the old zinc-500 notice on black', () => {
+  const old = contrastRatio('zinc-500', 'black');
+  assert.ok(old > 4.3 && old < 4.4, `zinc-500 on black is ${old.toFixed(2)}`);
+  assert.ok(contrastRatio('zinc-400', 'black') >= 4.5);
+});
+
+test('every text color the map component uses reads at 4.5:1 or better, even on its lightest background', () => {
+  // The map text sits on the black page or on zinc-950, and a hovered list row on zinc-900. Light
+  // text has the least contrast against the lightest of them, so zinc-900 is the case to pass.
+  const source = readFileSync(`${root}src/components/Map/RentMap.tsx`, 'utf8');
+  const used = new Set([...source.matchAll(/\btext-([a-z]+-\d{2,3})\b/g)].map((m) => m[1]));
+  assert.ok(used.has('zinc-400') && used.size >= 6, `found ${[...used].join(', ')}`);
+  for (const color of used) {
+    const ratio = contrastRatio(color, 'zinc-900');
+    assert.ok(ratio >= 4.5, `text-${color} on zinc-900 is ${ratio.toFixed(2)}:1`);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// The closed Copilot button next to the map credit
+
+test('the closed Copilot button keeps its full accessible name when its caption is hidden on narrow screens', () => {
+  const markup = renderToStaticMarkup(createElement(copilotModule.NemotronCopilot, { currentCity: 'all' }));
+  const buttons = [...markup.matchAll(/<button[^>]*>(.*?)<\/button>/gs)];
+  assert.equal(buttons.length, 1, 'only the launcher is rendered while the panel is closed');
+  assert.equal(textOf(buttons[0][1]), 'NEMOTRON TENANT COPILOT', 'the name stays in the button for assistive technology');
+  const caption = buttons[0][1].match(/<span class="([^"]*)">NEMOTRON TENANT COPILOT<\/span>/);
+  assert.ok(caption, 'the caption is its own element');
+  assert.deepEqual(caption[1].split(' ').sort(), ['sm:not-sr-only', 'sr-only'], 'hidden visually below sm, shown from sm up');
 });
 
 // ---------------------------------------------------------------------------------------------

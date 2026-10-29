@@ -212,6 +212,14 @@
   text-decoration: underline;
 }
 
+/* Below sm the closed Copilot button is a small icon fixed at the bottom right of the screen. Keep the
+   credit out of its column, and let it wrap, so it stays whole when that button sits over the map. */
+@media (max-width: 639.98px) {
+  .rent-map.leaflet-container .leaflet-bottom.leaflet-left {
+    right: 4.75rem;
+  }
+}
+
 /* Custom scrollbars */
 ::-webkit-scrollbar {
   width: 8px;

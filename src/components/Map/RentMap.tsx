@@ -4,19 +4,21 @@ import { CITIES } from '../../data/cities';
 import { APPROXIMATE_POSITION_NOTICE, CITY_POSITIONS, LISTING_POSITIONS } from '../../data/mapCoordinates';
 import type { Listing } from '../../types';
 import {
-  CLOSE_ZOOM_CAP,
-  FIT_PADDING_PX,
+  LEAFLET_LICENSE_FILE,
   MAP_MAX_ZOOM,
   MAP_MIN_ZOOM,
   OSM_ATTRIBUTION_HTML,
   OSM_TILE_URL,
   TIER_RANGE_TEXT,
   cityContextMarkers,
+  createMapFramer,
+  createTileFailureTracker,
+  disablePanAnimation,
   formatScore,
   planMapView,
   splitListingsByPosition,
 } from './mapModel';
-import type { ContextMarker, MapViewPlan, PlottedListing } from './mapModel';
+import type { ContextMarker, MapFramer, MapViewPlan, PlottedListing } from './mapModel';
 
 type LeafletModule = typeof import('leaflet');
 
@@ -36,7 +38,7 @@ interface MapEngine {
   /** What each layer currently shows. An unchanged key means the DOM, and any focus in it, is left alone. */
   pinKey: string | null;
   contextKey: string | null;
-  viewKey: string | null;
+  framer: MapFramer;
   pinTeardowns: Array<() => void>;
 }
 
@@ -61,13 +63,21 @@ function createEngine(L: LeafletModule, container: HTMLElement, onTilesFailed: (
     zoomAnimation: !reduceMotion,
     fadeAnimation: !reduceMotion,
     markerZoomAnimation: !reduceMotion,
+    // Inertia is the slide after a drag. With the panBy wrapper below, reduced motion has no slide.
+    inertia: !reduceMotion,
   });
+  // Leaflet's arrow keys pan with an animation that no map option turns off.
+  if (reduceMotion) disablePanAnimation(map);
   try {
     // Bottom left, so the fixed Copilot button at the bottom right of the screen cannot cover it.
     L.control.attribution({ position: 'bottomleft' }).addTo(map);
     const tiles = L.tileLayer(OSM_TILE_URL, { attribution: OSM_ATTRIBUTION_HTML, maxZoom: MAP_MAX_ZOOM });
-    tiles.on('tileerror', () => onTilesFailed(true));
-    tiles.on('tileload', () => onTilesFailed(false));
+    // A failed tile keeps the notice up until it loads or leaves the layer. Another tile loading
+    // does not clear it.
+    const failures = createTileFailureTracker(onTilesFailed);
+    tiles.on('tileerror', (event) => failures.fail(event.tile));
+    tiles.on('tileload', (event) => failures.release(event.tile));
+    tiles.on('tileunload', (event) => failures.release(event.tile));
     tiles.addTo(map);
     // Below the marker pane, so a context marker can never sit over a listing pin.
     map.createPane(CONTEXT_PANE).style.zIndex = '450';
@@ -78,7 +88,7 @@ function createEngine(L: LeafletModule, container: HTMLElement, onTilesFailed: (
       pins: L.layerGroup().addTo(map),
       pinKey: null,
       contextKey: null,
-      viewKey: null,
+      framer: createMapFramer(map),
       pinTeardowns: [],
     };
   } catch (error) {
@@ -196,17 +206,8 @@ function syncContext(engine: MapEngine, markers: readonly ContextMarker[]) {
 }
 
 function syncView(engine: MapEngine, plan: MapViewPlan) {
-  if (engine.viewKey === plan.key) return;
   // The first view is placed in one step. Later ones animate unless the user asks for less motion.
-  const animate = engine.viewKey !== null && !prefersReducedMotion();
-  engine.viewKey = plan.key;
-  const { L, map } = engine;
-  if (plan.kind === 'center') {
-    map.setView([plan.center.lat, plan.center.lng], plan.zoom, { animate });
-  } else {
-    const bounds = L.latLngBounds(plan.points.map((p) => [p.lat, p.lng] as [number, number]));
-    map.fitBounds(bounds, { padding: [FIT_PADDING_PX, FIT_PADDING_PX], maxZoom: CLOSE_ZOOM_CAP, animate });
-  }
+  engine.framer.show(plan, !prefersReducedMotion());
 }
 
 interface MappedListingListProps {
@@ -302,7 +303,8 @@ export const RentMap: React.FC<RentMapProps> = ({ listings, selectedCityId, onSe
         engine = created;
         engineRef.current = created;
         if (typeof ResizeObserver !== 'undefined') {
-          resizeObserver = new ResizeObserver(() => created.map.invalidateSize({ animate: false }));
+          // A real size change frames the current view again: a fit made for a wide map clips pins on a narrow one.
+          resizeObserver = new ResizeObserver(() => created.framer.resize());
           resizeObserver.observe(container);
         }
         setReady(true);
@@ -317,6 +319,7 @@ export const RentMap: React.FC<RentMapProps> = ({ listings, selectedCityId, onSe
       if (engine) disposeEngine(engine);
       engineRef.current = null;
       setReady(false);
+      setTilesFailed(false);
     };
   }, []);
 
@@ -343,7 +346,7 @@ export const RentMap: React.FC<RentMapProps> = ({ listings, selectedCityId, onSe
         <h3 id="radar-map-heading" className="font-bold text-zinc-200 uppercase">
           Radar map ({plotted.length} of {listings.length} mapped)
         </h3>
-        <span className="text-zinc-500 font-sans">
+        <span className="text-zinc-400 font-sans">
           {APPROXIMATE_POSITION_NOTICE}. Pins are neighborhood-scale points, not actual homes or named stops.
         </span>
       </div>
@@ -362,7 +365,7 @@ export const RentMap: React.FC<RentMapProps> = ({ listings, selectedCityId, onSe
           )}
           {tilesFailed && (
             <p className="inline-block border border-amber-700 bg-zinc-950 px-2 py-1 text-amber-300">
-              Basemap tiles are unavailable. Listing pins, the list below, and Grid view still work.
+              Basemap tiles are unavailable for some or all of this map. Listing pins, the list below, and Grid view still work.
             </p>
           )}
         </div>
@@ -427,6 +430,18 @@ export const RentMap: React.FC<RentMapProps> = ({ listings, selectedCityId, onSe
           )}
         </div>
       </div>
+
+      <p className="mt-4 text-[11px] text-zinc-400 font-sans">
+        Map library: Leaflet, BSD 2-Clause.{' '}
+        <a
+          href={`${import.meta.env.BASE_URL}${LEAFLET_LICENSE_FILE}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+        >
+          Leaflet license notice
+        </a>
+      </p>
     </section>
   );
 };
