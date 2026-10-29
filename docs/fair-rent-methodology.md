@@ -6,7 +6,9 @@ RentScanner shows two numbers on each bundled demo fixture listing: an **Illustr
 investor median, a savings claim, or advice about any live posting.
 
 The calculation lives in `src/utils/fairRentCalculator.ts` and the pay defaults in
-`src/data/cities.ts`. Scout search hits have no rent and never get either number.
+`src/data/cities.ts`. The listing card and the fixture dossier both render its output through
+`src/components/FairRentMetrics.tsx`, so they cannot disagree. Scout search hits have no rent and
+never get either number.
 
 ## What the numbers use
 
@@ -77,7 +79,7 @@ Worked example, fixture `nyc-sublet-01` (asking $1,250, reference $2,800, pay $1
 
 These are **gross** (before tax) amounts for the stated coverage, as of **2026-10-28**. They are
 not take-home pay and not an average young-worker wage. Each default carries its basis,
-effective date and sources in `src/data/cities.ts`.
+effective date and sources in `src/data/cities.ts`, and the dossier shows them.
 
 | City | Default (gross, per hour) | Coverage | Effective | Source |
 |---|---|---|---|---|
@@ -120,12 +122,27 @@ Dubai has no default. Hours stay unavailable until the user enters a gross hourl
 The interface says why. The Emirati or occupation-specific policies are narrower than "every
 worker", so none of them is used as a universal rate.
 
+## The pay control and its state
+
+- The fixture dossier has a labelled number field, "Gross hourly pay", with the currency and the
+  unit (per hour, before tax) in the label. It starts at the city default. Each listing card has
+  a button that opens the dossier to set or edit it.
+- Pay is kept **per city**, in memory in `App`. Changing it for one city updates that city's
+  cards and its open dossier together and never touches another city. It is not saved: a page
+  reload returns every city to its default. Closing and reopening a dossier keeps it.
+- A custom value is labelled **entered by you**. It is never described as a statutory wage.
+- Emptying the field, or entering something that is not a number above 0, leaves the hours
+  unavailable and says what to fix. It does **not** quietly bring the default back. "Restore
+  default" removes the override on purpose. Dubai has no default to restore.
+- A card or dossier rendered without the pay props, for example by an older caller, uses the city
+  default. A dossier without a change handler shows the numbers but no field.
+
 ## Limits
 
 - The demo reference rent and the asking rents are illustrative fixture values. The AGI and
   hours therefore describe the fixtures, not real listings or a real market.
 - The wage defaults are statutory floors for their stated coverage. A reader's own pay can be
-  higher, lower, or taxed differently.
+  higher, lower, or taxed differently. Use the pay field for a better estimate.
 - The tenant protection factor is neutral. AGI does not measure legal protection, and it does not
   replace the Nemotron deal score, `fairRentScore`, the categorical `gentrificationIndex`, or any
   filter or sort. Those fields are unchanged.
@@ -137,4 +154,11 @@ node --experimental-strip-types --test tests/fair-rent-calculator.test.ts
 ```
 
 The test is offline. It covers the arithmetic, the validation rules, the wage snapshot and all
-eleven fixtures in all eight cities. It does not establish that any rate is current in law.
+eleven fixtures in all eight cities. It also renders the real card, dossier and `App` to static
+markup and checks the text, labels and attributes shown for default, custom, cleared, invalid,
+negative and parity states.
+
+Static markup does not click, type, focus or press Escape. The tests call the card and pay control
+as functions to check that their callbacks fire with the right city and text, but they do not run
+a browser, so `App`'s state updates and the dialog's focus and Escape behavior are not exercised
+by this suite. The test does not establish that any rate is current in law.

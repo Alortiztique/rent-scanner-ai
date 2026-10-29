@@ -4,15 +4,23 @@
 // The calculator imports only types, so it loads directly under strip-types. The data modules
 // need Vite's transform (extensionless imports), so they load through an in-process Vite SSR
 // loader that reads no .env file, like tests/clause-audit.test.ts.
-// These checks cover arithmetic, validation, the wage snapshot, and the fixture conversion. They
-// do not establish that any demo reference rent or minimum wage is current or correct in law.
+// These checks cover arithmetic, validation, the wage snapshot, and the fixture conversion.
+// They also render the real ListingCard, ListingModal, and App with react-dom/server, which gives
+// static markup only. Markup checks show what is displayed for a given state. They do not click,
+// type, focus, or press Escape. The handler wiring checks call the hook-free components as
+// functions and invoke the props they pass down, which checks the callback contract but still
+// runs no browser. App's own state updates and the dialog focus behavior are not exercised here.
+// None of this establishes that any demo reference rent or minimum wage is current in law.
 // Run: node --experimental-strip-types --test tests/fair-rent-calculator.test.ts
 import { after, before, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { createElement, isValidElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { ViteDevServer } from 'vite';
-import type { City, GrossPayOverrides, Listing } from '../src/types/index.ts';
+import type { City, GrossPayOverrides, Listing, ScoutListing } from '../src/types/index.ts';
 import {
   TENANT_PROTECTION_FACTOR,
   calculateAgi,
@@ -26,6 +34,11 @@ import {
   setGrossPayOverride,
 } from '../src/utils/fairRentCalculator.ts';
 
+// Placeholders for the app's build-time settings. Vite reads them from the process environment
+// because the loader below is told to read no .env file. The key is not a real key.
+process.env.VITE_NEBIUS_API_KEY = 'offline-test-placeholder-not-a-key';
+process.env.VITE_NEBIUS_BASE_URL = 'https://nebius.invalid/v1';
+
 globalThis.fetch = (() => {
   throw new Error('real network access is disabled in fair-rent tests');
 }) as typeof fetch;
@@ -34,9 +47,18 @@ for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) {
   mock.method(console, method, () => {});
 }
 
+type CardModule = typeof import('../src/components/ListingCard.tsx');
+type ModalModule = typeof import('../src/components/ListingModal.tsx');
+type MetricsModule = typeof import('../src/components/FairRentMetrics.tsx');
+type AppModule = typeof import('../src/App.tsx');
+
 let server: ViteDevServer;
 let CITIES: City[];
 let MOCK_LISTINGS: Listing[];
+let card: CardModule;
+let modal: ModalModule;
+let metricsModule: MetricsModule;
+let app: AppModule;
 
 before(async () => {
   server = await createServer({
@@ -50,6 +72,10 @@ before(async () => {
   });
   ({ CITIES } = (await server.ssrLoadModule('/src/data/cities.ts')) as { CITIES: City[] });
   ({ MOCK_LISTINGS } = (await server.ssrLoadModule('/src/data/mockListings.ts')) as { MOCK_LISTINGS: Listing[] });
+  card = (await server.ssrLoadModule('/src/components/ListingCard.tsx')) as CardModule;
+  modal = (await server.ssrLoadModule('/src/components/ListingModal.tsx')) as ModalModule;
+  metricsModule = (await server.ssrLoadModule('/src/components/FairRentMetrics.tsx')) as MetricsModule;
+  app = (await server.ssrLoadModule('/src/App.tsx')) as AppModule;
 });
 
 after(async () => {
@@ -442,4 +468,446 @@ test('calculating never changes the bundled scores, audits, or prices', () => {
     assert.equal(typeof listing.nemotronAudit.fairRentScore, 'number');
     assert.match(listing.nemotronAudit.gentrificationIndex, /^(Anti-Gentrification Champion|Community Grounded|Corporate Gouging Alert)$/);
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Rendered card and dossier (static markup)
+
+const nyc = () => listingById('nyc-sublet-01');
+
+/** NYC with another asking rent. The demo reference stays USD 2,800 and the pay stays USD 17. */
+const nycAsking = (priceLocal: number): Listing => ({ ...nyc(), priceLocal, priceUsd: priceLocal });
+
+const renderCard = (listing: Listing, payOverride?: string) =>
+  renderToStaticMarkup(createElement(card.ListingCard, { listing, onSelect: () => {}, payOverride }));
+
+const renderDossier = (listing: Listing, payOverride?: string, editable = true) =>
+  renderToStaticMarkup(
+    createElement(modal.ListingModal, {
+      listing,
+      onClose: () => {},
+      payOverride,
+      onPayOverrideChange: editable ? () => {} : undefined,
+    }),
+  );
+
+/** Visible text of some markup, with tags removed and entities decoded. */
+const textOf = (markup: string) =>
+  markup
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&#x27;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const escapeHtml = (value: string) => value.replace(/&/g, '&amp;').replace(/'/g, '&#x27;');
+
+/** The fair-rent metrics block of a rendered card or dossier. */
+function metricsBlock(markup: string, variant: 'card' | 'dossier'): string {
+  const match = markup.match(new RegExp(`<section[^>]*data-fair-rent="${variant}"[\\s\\S]*?</section>`));
+  assert.ok(match, `a ${variant} metrics block is rendered`);
+  return match[0];
+}
+
+/** The values shown for the four metrics, as displayed text. */
+function shownMetrics(markup: string, variant: 'card' | 'dossier') {
+  const shown = textOf(metricsBlock(markup, variant));
+  const pick = (pattern: RegExp) => shown.match(pattern)?.[1] ?? null;
+  return {
+    agi: pick(/Illustrative AGI (\S+)/),
+    asking: pick(/Gross-pay hours, asking rent ([\d,.]+) h/),
+    reference: pick(/Gross-pay hours, demo reference rent ([\d,.]+) h/),
+    difference: pick(/Difference ([\d,.]+ (?:fewer|extra) hours|Same hours)/),
+  };
+}
+
+/** What the calculator says the metrics should display, formatted the way the interface formats them. */
+function expectedMetrics(listing: Listing, payOverride?: string) {
+  const result = calculateListingFairRent(listing, cityById(listing.cityId).grossPay, payOverride);
+  const diff = result.hours?.difference;
+  return {
+    agi: result.agi === null ? 'unavailable' : formatOneDecimal(result.agi),
+    asking: result.hours ? formatOneDecimal(result.hours.asking) : null,
+    reference: result.hours ? formatOneDecimal(result.hours.reference) : null,
+    difference:
+      diff === undefined
+        ? null
+        : displayedSign(diff) === 0
+          ? 'Same hours'
+          : `${formatOneDecimal(Math.abs(diff))} ${diff > 0 ? 'fewer' : 'extra'} hours`,
+  };
+}
+
+test('the card and the dossier show the same numbers as the calculator for every fixture and several pays', () => {
+  for (const listing of MOCK_LISTINGS) {
+    for (const payOverride of [undefined, '25', '9.5', '', 'abc']) {
+      const label = `${listing.id} pay ${JSON.stringify(payOverride)}`;
+      const expected = expectedMetrics(listing, payOverride);
+      assert.deepEqual(shownMetrics(renderCard(listing, payOverride), 'card'), expected, `card ${label}`);
+      assert.deepEqual(shownMetrics(renderDossier(listing, payOverride), 'dossier'), expected, `dossier ${label}`);
+    }
+  }
+});
+
+test('NYC shows 55.4, 73.5 h, 164.7 h and 91.2 fewer hours with a labelled default basis', () => {
+  for (const [name, markup, variant] of [
+    ['card', renderCard(nyc()), 'card'],
+    ['dossier', renderDossier(nyc()), 'dossier'],
+  ] as const) {
+    const shown = textOf(metricsBlock(markup, variant));
+    assert.match(shown, /Illustrative AGI 55\.4/, name);
+    assert.match(shown, /Demo reference rent \$2,800\/mo/, name);
+    assert.match(shown, /Gross-pay hours, asking rent 73\.5 h/, name);
+    assert.match(shown, /Gross-pay hours, demo reference rent 164\.7 h/, name);
+    assert.match(shown, /Difference 91\.2 fewer hours than the demo reference/, name);
+    assert.match(shown, /At \$17\.00\/h gross, city default: General covered non-tipped minimum wage\. Effective 2026-01-01\./, name);
+  }
+  assert.match(textOf(metricsBlock(renderCard(nyc()), 'card')), /shown to one decimal/);
+  assert.match(textOf(metricsBlock(renderDossier(nyc()), 'dossier')), /shown to one decimal/);
+});
+
+test('the old Local Median caption is relabelled Demo reference rent and nothing claims an investor median', () => {
+  for (const markup of [renderCard(nyc()), renderDossier(nyc())]) {
+    assert.doesNotMatch(markup, /Local Median/);
+    assert.match(markup, /Demo reference rent/);
+  }
+  const dossier = textOf(renderDossier(nyc()));
+  assert.match(dossier, /not a verified investor median, market average, or saving on a live posting/);
+  assert.match(dossier, /neutral tenant protection factor, a modelling assumption/);
+  // The existing demo labels stay.
+  assert.match(renderCard(nyc()), /Demo fixture · sample data/);
+  assert.match(dossier, /DEMO FIXTURE DOSSIER #nyc-sublet-01/);
+});
+
+test('a non-USD dossier explains the conversion and a Bogotá dossier shows the monthly amount and divisor', () => {
+  const london = textOf(renderDossier(listingById('london-sublet-01')));
+  assert.match(london, /converted from \$1,950 USD with this fixture's own local\/USD price ratio/);
+  assert.match(london, /not a live exchange rate/);
+  assert.match(london, /Demo reference rent \(local currency\) £1,534\/mo/);
+  // A USD fixture has nothing to convert.
+  assert.doesNotMatch(textOf(renderDossier(nyc())), /price ratio/);
+
+  const bogota = textOf(renderDossier(listingById('bogota-sublet-01')));
+  assert.match(bogota, /Derived gross hourly equivalent: COP \$1,750,905 per month \/ 182 working hours a month = COP \$9,620\.36 per hour/);
+  assert.match(bogota, /analytical assumption/);
+  assert.match(bogota, /Not an enacted hourly rate/);
+  assert.match(bogota, /At COP \$9,620\.36\/h gross, city default: Derived gross hourly equivalent/);
+  assert.match(bogota, /Effective 2026-07-15/);
+});
+
+test('custom pay is labelled as entered by the user and never as a statutory wage', () => {
+  for (const [markup, variant] of [
+    [renderCard(nyc(), '25'), 'card'],
+    [renderDossier(nyc(), '25'), 'dossier'],
+  ] as const) {
+    const shown = textOf(metricsBlock(markup, variant));
+    assert.match(shown, /At \$25\.00\/h gross, entered by you\. This is your figure, not a statutory wage\./);
+    assert.doesNotMatch(shown, /city default/);
+    assert.match(shown, /Gross-pay hours, asking rent 50\.0 h/);
+    assert.match(shown, /Gross-pay hours, demo reference rent 112\.0 h/);
+    assert.match(shown, /Difference 62\.0 fewer hours/);
+  }
+});
+
+test('clearing or breaking the pay hides only the hours and does not bring the default back', () => {
+  const cases: [string, RegExp][] = [
+    ['', /The gross hourly pay field is empty, so the default is not used/],
+    ['   ', /The gross hourly pay field is empty/],
+    ['abc', /not a number above 0/],
+    ['0', /not a number above 0/],
+    ['-5', /not a number above 0/],
+    ['1e999', /not a number above 0/],
+  ];
+  for (const [override, reason] of cases) {
+    for (const [markup, variant] of [
+      [renderCard(nyc(), override), 'card'],
+      [renderDossier(nyc(), override), 'dossier'],
+    ] as const) {
+      const label = `${variant} ${JSON.stringify(override)}`;
+      const shown = textOf(metricsBlock(markup, variant));
+      assert.match(shown, /Illustrative AGI 55\.4/, label);
+      assert.match(shown, /Gross-pay hours unavailable\./, label);
+      assert.match(shown, reason, label);
+      assert.doesNotMatch(shown, /73\.5|164\.7|91\.2|city default|At \$17/, `${label} does not fall back to the default`);
+      assert.doesNotMatch(shown, /Gross-pay hours, asking rent/, label);
+    }
+  }
+});
+
+test('Dubai has no default: hours are unavailable with a reason until AED pay is entered', () => {
+  const dubai = listingById('dubai-sublet-01');
+  const shown = textOf(metricsBlock(renderCard(dubai), 'card'));
+  assert.match(shown, /Illustrative AGI 53\.0/);
+  assert.match(shown, /Gross-pay hours unavailable\. No default\. There is no universal statutory minimum wage for every Dubai worker/);
+  assert.doesNotMatch(shown, /city default/);
+  assert.match(renderCard(dubai), /aria-label="Enter gross hourly pay for Dubai in the listing details"/);
+  assert.match(renderCard(dubai), />ENTER HOURLY PAY</);
+
+  const entered = textOf(metricsBlock(renderCard(dubai, '50'), 'card'));
+  assert.match(entered, /Gross-pay hours, asking rent 76\.0 h/);
+  assert.match(entered, /Gross-pay hours, demo reference rent 161\.5 h/);
+  assert.match(entered, /entered by you/);
+  assert.match(renderCard(dubai, '50'), />SET OR EDIT HOURLY PAY</);
+  // The dossier field starts empty and is required.
+  const field = renderDossier(dubai).match(/<input[^>]*id="gross-hourly-pay"[^>]*>/)?.[0] ?? '';
+  assert.match(field, /value=""/);
+  assert.match(field, /required=""/);
+  assert.doesNotMatch(renderDossier(dubai), /RESTORE DEFAULT/);
+});
+
+test('a negative AGI and negative difference are shown as above-reference and extra hours, never savings', () => {
+  const dear = nycAsking(3500);
+  assert.deepEqual(shownMetrics(renderCard(dear), 'card'), {
+    agi: '-25.0',
+    asking: '205.9',
+    reference: '164.7',
+    difference: '41.2 extra hours',
+  });
+  const shownCard = textOf(metricsBlock(renderCard(dear), 'card'));
+  assert.match(shownCard, /Asking rent is above the demo reference rent/);
+  assert.doesNotMatch(shownCard, /fewer hours|\bsav/i);
+  const shownDossier = textOf(metricsBlock(renderDossier(dear), 'dossier'));
+  assert.match(shownDossier, /Illustrative AGI -25\.0/);
+  assert.doesNotMatch(shownDossier, /fewer hours than/);
+});
+
+test('parity and near-parity show 0.0 and the same hours, never -0.0 or a gain', () => {
+  for (const asking of [2800, 2799.99, 2800.01]) {
+    const markup = renderCard(nycAsking(asking));
+    const label = String(asking);
+    assert.equal(shownMetrics(markup, 'card').agi, '0.0', label);
+    assert.equal(shownMetrics(markup, 'card').difference, 'Same hours', label);
+    const shown = textOf(metricsBlock(markup, 'card'));
+    assert.match(shown, /Asking rent matches the demo reference rent/, label);
+    assert.doesNotMatch(shown, /-0\.0|fewer hours|extra hours/, label);
+  }
+});
+
+test('a free listing shows AGI 100.0 and 0.0 asking hours', () => {
+  const free = { ...nyc(), priceLocal: 0, priceUsd: 0 };
+  assert.deepEqual(shownMetrics(renderCard(free), 'card'), {
+    agi: '100.0',
+    asking: '0.0',
+    reference: '164.7',
+    difference: '164.7 fewer hours',
+  });
+});
+
+test('nothing renders NaN or Infinity for unusable or overflowing inputs', () => {
+  const broken: [string, Listing, string | undefined][] = [
+    ['NaN rent', { ...nyc(), priceLocal: Number.NaN }, undefined],
+    ['Infinity rent', { ...nyc(), priceLocal: Number.POSITIVE_INFINITY }, undefined],
+    ['negative rent', { ...nyc(), priceLocal: -5 }, undefined],
+    ['NaN reference', { ...nyc(), originalMarketPriceUsd: Number.NaN }, undefined],
+    ['zero reference', { ...nyc(), originalMarketPriceUsd: 0 }, undefined],
+    ['non-USD without a ratio', { ...listingById('london-sublet-01'), priceUsd: 0 }, undefined],
+    ['overflowing hours', { ...nyc(), priceLocal: Number.MAX_VALUE }, '0.00001'],
+    ['overflowing AGI', { ...nyc(), originalMarketPriceUsd: Number.MIN_VALUE, priceLocal: Number.MAX_VALUE }, undefined],
+  ];
+  // Only the new metrics block is checked. The existing price line still prints whatever priceLocal holds.
+  for (const [name, listing, override] of broken) {
+    const blocks = [
+      metricsBlock(renderCard(listing, override), 'card'),
+      metricsBlock(renderDossier(listing, override), 'dossier'),
+    ];
+    for (const block of blocks) {
+      assert.doesNotMatch(textOf(block), /NaN|Infinity|undefined|e\+\d/, name);
+    }
+  }
+  // The unusable rent hides AGI; the unusable pay does not.
+  assert.equal(shownMetrics(renderCard({ ...nyc(), priceLocal: Number.NaN }), 'card').agi, 'unavailable');
+  assert.match(textOf(renderCard({ ...nyc(), priceLocal: Number.NaN })), /Needs a valid asking rent and demo reference rent/);
+  assert.equal(shownMetrics(renderCard({ ...nyc(), priceLocal: Number.MAX_VALUE }, '0.00001'), 'card').asking, null);
+});
+
+test('a card without a pay prop uses the city default, and a dossier without a handler has no pay field', () => {
+  const bareCard = renderToStaticMarkup(createElement(card.ListingCard, { listing: nyc(), onSelect: () => {} }));
+  assert.equal(shownMetrics(bareCard, 'card').asking, '73.5');
+  const bareModal = renderToStaticMarkup(createElement(modal.ListingModal, { listing: nyc(), onClose: () => {} }));
+  assert.equal(shownMetrics(bareModal, 'dossier').asking, '73.5');
+  assert.doesNotMatch(bareModal, /gross-hourly-pay/);
+  assert.match(bareModal, /clause-audit-input/);
+});
+
+test('the dossier pay field is a labelled native number input with currency, unit, and described states', () => {
+  const markup = renderDossier(nyc());
+  assert.match(markup, /<label[^>]*for="gross-hourly-pay"[^>]*>Gross hourly pay \(USD per hour, before tax\)<\/label>/);
+  const field = markup.match(/<input[^>]*id="gross-hourly-pay"[^>]*>/)?.[0] ?? '';
+  assert.match(field, /type="number"/);
+  assert.match(field, /inputMode="decimal"/);
+  assert.match(field, /min="0"/);
+  assert.match(field, /step="any"/);
+  assert.match(field, /required=""/);
+  assert.match(field, /value="17"/);
+  assert.match(field, /aria-invalid="false"/);
+  assert.match(field, /aria-describedby="gross-hourly-pay-hint gross-hourly-pay-status"/);
+  assert.match(markup, /id="gross-hourly-pay-hint"/);
+  assert.match(markup, /id="gross-hourly-pay-status"[^>]*aria-live="polite"/);
+  assert.match(textOf(markup), /Gross pay before tax, in USD\. It applies to every New York City listing and is kept only until the page reloads\./);
+  // An override shows what was typed; the restore button appears only once there is something to restore.
+  assert.match(markup, /Wage sources for New York City/);
+  assert.doesNotMatch(markup, /RESTORE DEFAULT/);
+  const typed = renderDossier(nyc(), '25');
+  assert.match(typed.match(/<input[^>]*id="gross-hourly-pay"[^>]*>/)?.[0] ?? '', /value="25"/);
+  assert.match(typed, />RESTORE DEFAULT</);
+  // Wage sources open safely in a new tab.
+  assert.match(markup, /<a href="https:\/\/dol\.ny\.gov\/minimum-wage" target="_blank" rel="noopener noreferrer"/);
+});
+
+test('an emptied or invalid field is flagged for assistive technology and offers a way back', () => {
+  for (const override of ['', 'abc', '0']) {
+    const markup = renderDossier(nyc(), override);
+    const field = markup.match(/<input[^>]*id="gross-hourly-pay"[^>]*>/)?.[0] ?? '';
+    assert.match(field, /aria-invalid="true"/, JSON.stringify(override));
+    assert.match(field, new RegExp(`value="${override}"`), JSON.stringify(override));
+    assert.match(markup, />RESTORE DEFAULT</, JSON.stringify(override));
+    const status = markup.match(/<p id="gross-hourly-pay-status"[^>]*>([^<]*)<\/p>/)?.[1] ?? '';
+    assert.ok(status.length > 0, `a status message for ${JSON.stringify(override)}`);
+  }
+});
+
+test('the card has a labelled route to the pay field in the details', () => {
+  const markup = renderCard(nyc());
+  assert.match(markup, /<button[^>]*aria-label="Set or edit gross hourly pay for New York City in the listing details"[^>]*>SET OR EDIT HOURLY PAY<\/button>/);
+  assert.match(renderCard(nyc(), ''), /aria-label="Enter gross hourly pay for New York City in the listing details"/);
+});
+
+test('a pay override for one city changes that city only, on every card', () => {
+  const overrides = setGrossPayOverride({}, 'nyc', '34');
+  for (const listing of MOCK_LISTINGS) {
+    const withOverrides = textOf(metricsBlock(renderCard(listing, overrides[listing.cityId]), 'card'));
+    const baseline = textOf(metricsBlock(renderCard(listing), 'card'));
+    if (listing.cityId === 'nyc') {
+      assert.match(withOverrides, /entered by you/, listing.id);
+      assert.notEqual(withOverrides, baseline, listing.id);
+    } else {
+      assert.equal(withOverrides, baseline, listing.id);
+    }
+  }
+  // Both NYC fixtures follow the one override.
+  const nycCards = MOCK_LISTINGS.filter((l) => l.cityId === 'nyc');
+  assert.equal(nycCards.length, 2);
+  for (const listing of nycCards) {
+    assert.equal(shownMetrics(renderCard(listing, '34'), 'card').asking, formatOneDecimal(listing.priceLocal / 34));
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Callback wiring (no DOM): the hook-free components are called as functions and their props invoked
+
+function findElements(node: ReactNode, match: (element: ReactElement<any>) => boolean, found: ReactElement<any>[] = []) {
+  if (Array.isArray(node)) {
+    for (const child of node) findElements(child, match, found);
+  } else if (isValidElement(node)) {
+    const element = node as ReactElement<{ children?: ReactNode }>;
+    if (match(element)) found.push(element);
+    findElements(element.props.children, match, found);
+  }
+  return found;
+}
+
+test('the card route button opens the dossier for its own listing (callback wiring)', () => {
+  const selected: Listing[] = [];
+  const tree = card.ListingCard({ listing: nyc(), onSelect: (l) => selected.push(l) });
+  const [metrics] = findElements(tree, (el) => el.type === metricsModule.FairRentMetrics);
+  assert.ok(metrics, 'the card renders the shared metrics');
+  assert.equal(metrics.props.variant, 'card');
+  const section = metricsModule.FairRentMetrics(metrics.props);
+  const [route] = findElements(section, (el) => el.type === 'button');
+  assert.ok(route);
+  route.props.onClick();
+  assert.deepEqual(selected.map((l) => l.id), ['nyc-sublet-01']);
+});
+
+test('typing in the dossier field and restoring the default report the city and text (callback wiring)', () => {
+  const calls: [string, string | null][] = [];
+  const onPayOverrideChange = (cityId: string, value: string | null) => calls.push([cityId, value]);
+  const section = metricsModule.FairRentMetrics({
+    listing: nyc(),
+    variant: 'dossier',
+    payOverride: '25',
+    onPayOverrideChange,
+  });
+  const [control] = findElements(section, (el) => typeof el.type === 'function' && el.type.name === 'GrossPayControl');
+  assert.ok(control, 'the dossier renders the pay control');
+  const rendered = (control.type as (props: unknown) => ReactNode)(control.props);
+  const [input] = findElements(rendered, (el) => el.type === 'input');
+  const [restore] = findElements(rendered, (el) => el.type === 'button');
+  assert.ok(input && restore);
+  input.props.onChange({ target: { value: '31.5' } });
+  input.props.onChange({ target: { value: '' } });
+  restore.props.onClick();
+  assert.deepEqual(calls, [
+    ['nyc', '31.5'],
+    ['nyc', ''],
+    ['nyc', null],
+  ]);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Scout hits stay unpriced; the dossier keeps its other parts; App shows eleven priced cards
+
+const scoutHit: ScoutListing = {
+  kind: 'scout',
+  mode: 'live',
+  id: 'scout:live:nyc:https://example.org/a',
+  title: 'Unverified Brooklyn room',
+  cityId: 'nyc',
+  cityName: 'New York City',
+  source: 'Tavily Web Scout',
+  sourceUrl: 'https://example.org/a',
+  description: 'A snippet.',
+  tags: [],
+};
+
+test('Scout hits get no AGI, hours, reference rent, or pay field', () => {
+  const cardMarkup = renderToStaticMarkup(createElement(card.ScoutCandidateCard, { candidate: scoutHit, onSelect: () => {} }));
+  const modalMarkup = renderToStaticMarkup(
+    createElement(modal.ListingModal, {
+      listing: scoutHit,
+      onClose: () => {},
+      payOverride: '25',
+      onPayOverrideChange: () => {},
+    }),
+  );
+  for (const markup of [cardMarkup, modalMarkup]) {
+    assert.doesNotMatch(markup, /Illustrative AGI|data-fair-rent|gross-hourly-pay|Demo reference rent|Gross-pay hours/);
+  }
+  assert.match(modalMarkup, /UNVERIFIED SEARCH HIT/);
+});
+
+test('the fixture dossier keeps its native dialog, audit, negotiation script, and clause auditor', () => {
+  const markup = renderDossier(nyc(), '25');
+  assert.match(markup, /<dialog[^>]*aria-labelledby="fixture-dossier-title"/);
+  assert.match(markup, /aria-label="Close listing dossier"/);
+  assert.match(markup, /id="fixture-dossier-title"/);
+  assert.ok(markup.includes(nyc().nemotronAudit.negotiationScript));
+  assert.ok(markup.includes(`${nyc().dealScore}/100 DEAL SCORE`));
+  assert.match(markup, /<textarea[^>]*id="clause-audit-input"/);
+});
+
+test('App renders the eleven fixtures in the unchanged deal-score order, each with the shared metrics', () => {
+  const markup = renderToStaticMarkup(createElement(app.App));
+  assert.equal((markup.match(/data-fair-rent="card"/g) ?? []).length, 11);
+  assert.equal((markup.match(/Illustrative AGI<\/span>/g) ?? []).length, 11);
+  assert.doesNotMatch(markup, /<dialog/, 'no dossier is open at first');
+  assert.doesNotMatch(markup, /NaN|Infinity/);
+  // Scores and sort order are the existing ones.
+  const expectedOrder = [...MOCK_LISTINGS].sort((a, b) => b.dealScore - a.dealScore);
+  let cursor = -1;
+  for (const listing of expectedOrder) {
+    const at = markup.indexOf(escapeHtml(listing.title), cursor + 1);
+    assert.ok(at > cursor, `${listing.id} follows the previous card in deal-score order`);
+    cursor = at;
+    assert.ok(markup.includes(`${listing.dealScore}/100 SCORE`), `${listing.id} keeps its deal score`);
+  }
+  // Each card carries its own city default: spot-check one per currency family.
+  assert.match(markup, /At \$17\.00\/h gross, city default/);
+  assert.match(markup, /At £12\.71\/h gross, city default/);
+  assert.match(markup, /At ¥1,280\/h gross, city default/);
+  assert.match(markup, /At COP \$9,620\.36\/h gross, city default/);
+  assert.match(markup, /At €12\.31\/h gross, city default/);
+  assert.match(markup, /At €13\.90\/h gross, city default/);
+  assert.match(markup, /At \$19\.61\/h gross, city default/);
+  assert.match(textOf(markup), /Gross-pay hours unavailable\. No default\./);
 });

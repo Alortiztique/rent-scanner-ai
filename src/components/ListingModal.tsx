@@ -3,6 +3,7 @@ import type { Listing, RadarListing, ScoutListing } from '../types';
 import { formatCurrency, formatUsd } from '../utils/formatters';
 import { isScoutListing } from '../services/scoutListings';
 import { ClauseAuditSection } from './ClauseAuditPanel';
+import { FairRentMetrics } from './FairRentMetrics';
 import { formatSourceHost } from '../services/tavilySearch';
 import {
   X,
@@ -23,6 +24,10 @@ import {
 interface ListingModalProps {
   listing: RadarListing | null;
   onClose: () => void;
+  /** Gross hourly pay text the user entered for the selected listing's city. Without it the city default applies. */
+  payOverride?: string;
+  /** Sets that city's pay text, or restores the default when value is null. Without it the dossier has no pay field. */
+  onPayOverrideChange?: (cityId: string, value: string | null) => void;
 }
 
 /**
@@ -30,12 +35,20 @@ interface ListingModalProps {
  * copy state from an earlier selection (including a late re-audit reply) cannot carry over.
  * Scout candidates get a separate view that has no audit, model attribution, or script.
  */
-export const ListingModal: React.FC<ListingModalProps> = ({ listing, onClose }) => {
+export const ListingModal: React.FC<ListingModalProps> = ({ listing, onClose, payOverride, onPayOverrideChange }) => {
   if (!listing) return null;
   if (isScoutListing(listing)) {
     return <ScoutCandidateDetails key={listing.id} candidate={listing} onClose={onClose} />;
   }
-  return <FixtureDossier key={listing.id} listing={listing} onClose={onClose} />;
+  return (
+    <FixtureDossier
+      key={listing.id}
+      listing={listing}
+      onClose={onClose}
+      payOverride={payOverride}
+      onPayOverrideChange={onPayOverrideChange}
+    />
+  );
 };
 
 /**
@@ -209,7 +222,14 @@ const ScoutCandidateDetails: React.FC<{ candidate: ScoutListing; onClose: () => 
   );
 };
 
-const FixtureDossier: React.FC<{ listing: Listing; onClose: () => void }> = ({ listing, onClose }) => {
+interface FixtureDossierProps {
+  listing: Listing;
+  onClose: () => void;
+  payOverride?: string;
+  onPayOverrideChange?: (cityId: string, value: string | null) => void;
+}
+
+const FixtureDossier: React.FC<FixtureDossierProps> = ({ listing, onClose, payOverride, onPayOverrideChange }) => {
   const { dialogRef, initialFocusRef: closeRef } = useModalDialog(onClose);
   const [copied, setCopied] = useState(false);
   const headingId = 'fixture-dossier-title';
@@ -304,7 +324,7 @@ const FixtureDossier: React.FC<{ listing: Listing; onClose: () => void }> = ({ l
                       )}
                     </div>
                     <div className="text-right">
-                      <div className="text-[10px] text-zinc-500 uppercase">Local Median</div>
+                      <div className="text-[10px] text-zinc-500 uppercase">Demo reference rent</div>
                       <div className="text-sm text-zinc-400 line-through">
                         {formatUsd(listing.originalMarketPriceUsd)}/mo
                       </div>
@@ -353,6 +373,16 @@ const FixtureDossier: React.FC<{ listing: Listing; onClose: () => void }> = ({ l
             <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed whitespace-pre-line font-sans">
               {listing.description}
             </p>
+          </div>
+
+          {/* Illustrative AGI, gross-pay hours, and the pay field. Pay state lives in App so the cards agree. */}
+          <div className="border border-zinc-800 bg-zinc-900/40 p-4">
+            <FairRentMetrics
+              variant="dossier"
+              listing={listing}
+              payOverride={payOverride}
+              onPayOverrideChange={onPayOverrideChange}
+            />
           </div>
 
           {/* NVIDIA Nemotron Deep Lease & Scam Audit */}

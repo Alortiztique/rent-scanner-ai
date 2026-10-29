@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { CITIES } from './data/cities';
 import { MOCK_LISTINGS } from './data/mockListings';
-import type { Listing, FilterState, RadarListing, ScoutListing } from './types';
+import type { Listing, FilterState, GrossPayOverrides, RadarListing, ScoutListing } from './types';
 import { Header } from './components/Header';
 import { AntiGentrificationBanner } from './components/AntiGentrificationBanner';
 import { CityFilter } from './components/CityFilter';
@@ -14,6 +14,7 @@ import { TeamCollaborationBanner } from './components/TeamCollaborationBanner';
 import { Footer } from './components/Footer';
 import { callNebiusTokenFactory } from './services/nebius';
 import { mergeScoutCandidates, selectVisibleScoutCandidates } from './services/scoutListings';
+import { setGrossPayOverride } from './utils/fairRentCalculator';
 import { RefreshCw, AlertCircle } from 'lucide-react';
 
 export function App() {
@@ -25,6 +26,9 @@ export function App() {
   const [isTeamTasksOpen, setIsTeamTasksOpen] = useState(false);
   const [isLiveScoutOpen, setIsLiveScoutOpen] = useState(false);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
+  // Gross hourly pay text the user entered, by city. Held here so every card and the dossier of a
+  // city agree, and so closing and reopening a dossier keeps it. In memory only, not persisted.
+  const [grossPayOverrides, setGrossPayOverrides] = useState<GrossPayOverrides>({});
 
   const [filters, setFilters] = useState<FilterState>({
     cityId: 'all',
@@ -45,6 +49,10 @@ export function App() {
 
   const handleFilterChange = (newFilters: Partial<FilterState>) => {
     setFilters((prev) => ({ ...prev, ...newFilters }));
+  };
+
+  const handleGrossPayChange = (cityId: string, value: string | null) => {
+    setGrossPayOverrides((prev) => setGrossPayOverride(prev, cityId, value));
   };
 
   const handleImportScoutCandidates = (incoming: ScoutListing[]) => {
@@ -302,6 +310,7 @@ Return strictly JSON matching this structure.`,
                 key={listing.id}
                 listing={listing}
                 onSelect={(item) => setSelectedListing(item)}
+                payOverride={grossPayOverrides[listing.cityId]}
               />
             ))}
           </div>
@@ -346,6 +355,8 @@ Return strictly JSON matching this structure.`,
       <ListingModal
         listing={selectedListing}
         onClose={() => setSelectedListing(null)}
+        payOverride={selectedListing ? grossPayOverrides[selectedListing.cityId] : undefined}
+        onPayOverrideChange={handleGrossPayChange}
       />
 
       <TavilyLiveScoutModal
