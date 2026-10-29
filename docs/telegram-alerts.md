@@ -4,7 +4,30 @@ The instant deal alert system monitors rental listings audited by **NVIDIA Nemot
 1. **Public City Broadcast Channels:** 9 dedicated Telegram channels (8 major metropolises + 1 global showcase).
 2. **Personal Radar Matching Engine (1-on-1 Direct Messages):** Registered users configure personalized criteria via an interactive Telegram bot (`@Rent_Scanner_AI_BOT`). The batch engine compares newly audited listings against user criteria and delivers private DMs with exact match explanations.
 
-**Status:** Fully operational locally and tested in live mode with Telegram Bot API. All 9 city channels are active, the interactive onboarding wizard is running, and the matching engine sends targeted alerts without cross-city noise.
+## Web entry point
+
+The header's **Deal Alerts** button opens a native dialog. **Continue in Telegram** opens
+`https://t.me/Rent_Scanner_AI_BOT?start=web`; pressing Start there begins the existing onboarding
+wizard. The bot must be deployed and running to respond. The web app does not verify its deployment
+or mark a visitor as subscribed. City, budget and other live subscription filters are set in Telegram.
+
+The same dialog previews messages using the bundled demo listings only, with a city, local-currency
+budget, minimum sample deal score and channel. It never includes unpriced Scout hits. Changing the
+city clears the budget so an amount in one currency is not reused in another. Preview settings can
+be saved in this browser, but are not synced with the Telegram bot. The preview defaults to 95+;
+the existing backend's default remains 90+ and is set independently.
+
+WhatsApp has a labelled local message preview only. There is no WhatsApp delivery integration.
+The browser does not request a bot token, phone number, chat ID or arbitrary webhook, and sends no
+notification request. Live Telegram delivery remains in the Python backend.
+
+Offline UI and service checks:
+
+```bash
+node --experimental-strip-types --test tests/notifications.test.ts
+```
+
+These checks do not send messages or establish that the bot or channels are running.
 
 ---
 
@@ -25,7 +48,7 @@ Telegram Renter ──────▶ /start /config ──────▶ bot_l
 - **`backend/notifier.py`** is the batch dispatcher. It reads Nemotron-70B batches, silences cities where no deals reach $\ge 90$ to preserve perceived market scarcity, and evaluates registered renter profiles in `users_db.json` to dispatch 1-on-1 DMs.
 - **`backend/bot.py`** provides Telegram Bot API bindings (`sendMessage`), brutalist cyberpunk markdown formatting, and personalized radar match headers.
 - **`backend/bot_listener.py`** is a long-polling daemon implementing an interactive state machine for 1-on-1 Telegram chat onboarding.
-- **`src/services/notifications.ts`** provides client-side TypeScript notification utilities with simulation preview fallbacks for zero-friction evaluation.
+- **`src/services/notifications.ts`** validates and saves local preview preferences, selects a matching demo listing, and formats a sample message. It does not deliver messages.
 
 ---
 
@@ -167,4 +190,4 @@ python3 backend/bot.py <YOUR_CHAT_ID_OR_CHANNEL>
 
 - **Token Isolation:** `TELEGRAM_BOT_TOKEN` is used server-side only in Python dispatchers. It is never embedded into client-side Vite bundles.
 - **Renter Privacy Protection:** `backend/users_db.json` and `backend/*.db` are strictly ignored by `.gitignore`. Renter Telegram `chatId` numbers and personal filters remain local and are never committed to the public GitHub repository. An anonymized template is provided at [`backend/users_db.example.json`](../backend/users_db.example.json).
-- **Graceful Client Fallback:** If `VITE_TELEGRAM_BOT_TOKEN` is unset in browser builds, `src/services/notifications.ts` switches to structured simulation preview mode with full message cards for judges, preventing client-side network failures.
+- **Browser boundary:** The client has no notification delivery path or token setting. Sample previews are always labelled as demo data. Saving preview settings does not create a subscription. Actual sign-up happens in Telegram and delivery uses the server-side `TELEGRAM_BOT_TOKEN`.

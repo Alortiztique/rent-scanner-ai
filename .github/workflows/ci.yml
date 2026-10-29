@@ -66,6 +66,9 @@ jobs:
       - name: Run offline radar map tests
         run: node --experimental-strip-types --test tests/map-visualization.test.ts
 
+      - name: Run offline alert preview tests
+        run: node --experimental-strip-types --test tests/notifications.test.ts
+
       # The app build does not compile the Pages Function or the Worker, so check them here.
       - name: Typecheck Scout server code
         run: node node_modules/typescript/bin/tsc --ignoreConfig --noEmit --target es2023 --module esnext --moduleResolution bundler --lib es2023,dom --types node --allowImportingTsExtensions worker/scout.ts functions/api/scout.ts

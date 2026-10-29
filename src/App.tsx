@@ -9,6 +9,7 @@ import { FilterBar } from './components/FilterBar';
 import { ListingCard, ScoutCandidateCard } from './components/ListingCard';
 import { ListingModal } from './components/ListingModal';
 import { TavilyLiveScoutModal } from './components/TavilyLiveScoutModal';
+import { DealAlertsModal } from './components/DealAlertsModal';
 import { NemotronCopilot } from './components/NemotronCopilot';
 import { TeamCollaborationBanner } from './components/TeamCollaborationBanner';
 import { Footer } from './components/Footer';
@@ -28,6 +29,7 @@ export function App() {
   const [selectedListing, setSelectedListing] = useState<RadarListing | null>(null);
   const [isTeamTasksOpen, setIsTeamTasksOpen] = useState(false);
   const [isLiveScoutOpen, setIsLiveScoutOpen] = useState(false);
+  const [isAlertsOpen, setIsAlertsOpen] = useState(false);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   // Grid is the default. Filters, city, sort and pay overrides live here, so they survive a switch.
   const [resultsView, setResultsView] = useState<ResultsView>('grid');
@@ -188,6 +190,7 @@ Return strictly JSON matching this structure.`,
       <Header
         onOpenTeamTasks={() => setIsTeamTasksOpen(true)}
         onOpenLiveScout={() => setIsLiveScoutOpen(true)}
+        onOpenAlerts={() => setIsAlertsOpen(true)}
       />
 
       {/* Main Container */}
@@ -409,6 +412,13 @@ Return strictly JSON matching this structure.`,
         onClose={() => setIsLiveScoutOpen(false)}
         onImportListings={handleImportScoutCandidates}
         defaultCity={currentCityName}
+      />
+
+      <DealAlertsModal
+        isOpen={isAlertsOpen}
+        onClose={() => setIsAlertsOpen(false)}
+        defaultCityId={selectedCityId}
+        listings={listings}
       />
 
       <TeamCollaborationBanner
