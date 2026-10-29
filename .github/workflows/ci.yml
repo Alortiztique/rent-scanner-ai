@@ -48,8 +48,23 @@ jobs:
       - name: Install dependencies from lockfile
         run: npm ci
 
+      # On pull_request events this is the merge commit that was built. Its parents are the base branch tip and the PR head.
+      - name: Record tested revision
+        run: |
+          echo "tested commit: $(git rev-parse HEAD)"
+          echo "parents: $(git log -1 --format=%P)"
+
       - name: Run offline Scout tests
         run: node --experimental-strip-types --test tests/tavily-search.test.ts tests/scout-listings.test.ts tests/scout-endpoint.test.ts tests/scout-client.test.ts
+
+      - name: Run offline clause audit tests
+        run: node --experimental-strip-types --test tests/clause-audit.test.ts
+
+      - name: Run offline fair rent calculator tests
+        run: node --experimental-strip-types --test tests/fair-rent-calculator.test.ts
+
+      - name: Run offline radar map tests
+        run: node --experimental-strip-types --test tests/map-visualization.test.ts
 
       # The app build does not compile the Pages Function or the Worker, so check them here.
       - name: Typecheck Scout server code
@@ -60,3 +75,7 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # Leaflet's BSD license has to ship with its code. Vite copies public/ into dist/, so compare the built copy.
+      - name: Check Leaflet license notice ships in dist
+        run: cmp public/leaflet-LICENSE.txt dist/leaflet-LICENSE.txt

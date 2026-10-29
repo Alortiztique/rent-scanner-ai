@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { CITIES } from './data/cities';
 import { MOCK_LISTINGS } from './data/mockListings';
-import type { Listing, FilterState, RadarListing, ScoutListing } from './types';
+import type { Listing, FilterState, GrossPayOverrides, RadarListing, ScoutListing } from './types';
 import { Header } from './components/Header';
 import { AntiGentrificationBanner } from './components/AntiGentrificationBanner';
 import { CityFilter } from './components/CityFilter';
@@ -12,9 +12,13 @@ import { TavilyLiveScoutModal } from './components/TavilyLiveScoutModal';
 import { NemotronCopilot } from './components/NemotronCopilot';
 import { TeamCollaborationBanner } from './components/TeamCollaborationBanner';
 import { Footer } from './components/Footer';
+import { RentMap } from './components/Map/RentMap';
 import { callNebiusTokenFactory } from './services/nebius';
 import { mergeScoutCandidates, selectVisibleScoutCandidates } from './services/scoutListings';
-import { RefreshCw, AlertCircle } from 'lucide-react';
+import { setGrossPayOverride } from './utils/fairRentCalculator';
+import { RefreshCw, AlertCircle, LayoutGrid, Map as MapIcon } from 'lucide-react';
+
+type ResultsView = 'grid' | 'map';
 
 export function App() {
   const [selectedCityId, setSelectedCityId] = useState<string>('all');
@@ -25,6 +29,11 @@ export function App() {
   const [isTeamTasksOpen, setIsTeamTasksOpen] = useState(false);
   const [isLiveScoutOpen, setIsLiveScoutOpen] = useState(false);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
+  // Grid is the default. Filters, city, sort and pay overrides live here, so they survive a switch.
+  const [resultsView, setResultsView] = useState<ResultsView>('grid');
+  // Gross hourly pay text the user entered, by city. Held here so every card and the dossier of a
+  // city agree, and so closing and reopening a dossier keeps it. In memory only, not persisted.
+  const [grossPayOverrides, setGrossPayOverrides] = useState<GrossPayOverrides>({});
 
   const [filters, setFilters] = useState<FilterState>({
     cityId: 'all',
@@ -45,6 +54,10 @@ export function App() {
 
   const handleFilterChange = (newFilters: Partial<FilterState>) => {
     setFilters((prev) => ({ ...prev, ...newFilters }));
+  };
+
+  const handleGrossPayChange = (cityId: string, value: string | null) => {
+    setGrossPayOverrides((prev) => setGrossPayOverride(prev, cityId, value));
   };
 
   const handleImportScoutCandidates = (incoming: ScoutListing[]) => {
@@ -294,17 +307,58 @@ Return strictly JSON matching this structure.`,
           </span>
         </div>
 
+        {/* Grid and Radar Map show the same filtered, sorted fixtures */}
+        <div
+          role="group"
+          aria-label="Demo fixture listings view"
+          className="mb-4 inline-flex border border-zinc-700 font-mono text-xs"
+        >
+          <button
+            type="button"
+            aria-pressed={resultsView === 'grid'}
+            onClick={() => setResultsView('grid')}
+            className={`flex items-center gap-1.5 px-3 py-2 font-bold uppercase cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
+              resultsView === 'grid' ? 'bg-emerald-500 text-black' : 'bg-zinc-950 text-zinc-300 hover:bg-zinc-900'
+            }`}
+          >
+            <LayoutGrid className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Grid</span>
+          </button>
+          <button
+            type="button"
+            aria-pressed={resultsView === 'map'}
+            onClick={() => setResultsView('map')}
+            className={`flex items-center gap-1.5 px-3 py-2 font-bold uppercase border-l border-zinc-700 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
+              resultsView === 'map' ? 'bg-emerald-500 text-black' : 'bg-zinc-950 text-zinc-300 hover:bg-zinc-900'
+            }`}
+          >
+            <MapIcon className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Radar map</span>
+          </button>
+        </div>
+
+        {resultsView === 'map' && (
+          <RentMap
+            listings={filteredListings}
+            selectedCityId={selectedCityId}
+            onSelectListing={(item) => setSelectedListing(item)}
+          />
+        )}
+
         {/* Listings Grid */}
         {filteredListings.length > 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {filteredListings.map((listing) => (
-              <ListingCard
-                key={listing.id}
-                listing={listing}
-                onSelect={(item) => setSelectedListing(item)}
-              />
-            ))}
-          </div>
+          resultsView === 'grid' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {filteredListings.map((listing) => (
+                <ListingCard
+                  key={listing.id}
+                  listing={listing}
+                  onSelect={(item) => setSelectedListing(item)}
+                  payOverride={grossPayOverrides[listing.cityId]}
+                />
+              ))}
+            </div>
+          )
         ) : (
           <div className="border border-zinc-800 bg-zinc-950 p-12 text-center my-8 font-mono">
             <AlertCircle className="w-8 h-8 text-amber-400 mx-auto mb-3" />
@@ -346,6 +400,8 @@ Return strictly JSON matching this structure.`,
       <ListingModal
         listing={selectedListing}
         onClose={() => setSelectedListing(null)}
+        payOverride={selectedListing ? grossPayOverrides[selectedListing.cityId] : undefined}
+        onPayOverrideChange={handleGrossPayChange}
       />
 
       <TavilyLiveScoutModal
