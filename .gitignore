@@ -32,6 +32,8 @@ ENV/
 scored_listings_feed.json
 backend/users_db.json
 backend/*.db
+backend/*.db-*
+backend/users_db.*.tmp
 !backend/users_db.example.json
 
 # Editor directories and files

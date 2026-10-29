@@ -89,6 +89,7 @@ test('missing, corrupt and invalid stored settings fall back to the current city
     JSON.stringify({ ...preferences, maxPriceLocal: -1 }),
     JSON.stringify({ ...preferences, maxPriceLocal: '1250' }),
     JSON.stringify({ ...preferences, minDealScore: 101 }),
+    JSON.stringify({ ...preferences, minDealScore: 94 }),
     JSON.stringify({ ...preferences, channel: 'email' }),
   ]) {
     if (value === undefined) storage.delete(key);
@@ -122,6 +123,7 @@ test('both channel previews label their data and make no delivery or verificatio
     assert.ok(message.includes(channel.toUpperCase()));
     assert.match(message, /Sample data\. Not a live listing or a delivered message\./);
     assert.ok(message.includes(listings[0].sourceUrl));
+    assert.ok(message.includes(listings[0].nemotronAudit.leaseClauseSummary));
     assert.doesNotMatch(message, /Verified Lease|Audited by|delivered at/i);
   }
 });

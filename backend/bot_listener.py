@@ -1,398 +1,216 @@
-#!/usr/bin/env python3
-"""
-RentScanner AI // Interactive Telegram Bot Listener (TASK-06)
-Nebius x NVIDIA Global AI Hackathon
-
-Manages 1-on-1 conversations with renters in Telegram.
-Guides renters through the Skyscanner-style filter wizard with inline buttons,
-and saves personalized alert preferences to users_db.json.
-"""
-
-import os
-import sys
+"""Private-chat onboarding. Run one listener for each subscriber file."""
 import json
+import math
+import os
+from pathlib import Path
+import re
+import tempfile
+import threading
 import time
-import urllib.request
-import urllib.error
-from typing import Dict, Any, Optional
 
-# Load Token
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-if not TELEGRAM_BOT_TOKEN:
-    env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                if line.startswith("TELEGRAM_BOT_TOKEN="):
-                    TELEGRAM_BOT_TOKEN = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    break
+from alert_model import CITIES_INFO, DEFAULT_THRESHOLD, HOUSING_TYPES, number
+from bot import SAMPLE_BOGOTA_DEAL, send_api_request, send_telegram_alert
 
-USERS_DB_FILE = os.path.join(os.path.dirname(__file__), "users_db.json")
-
-# In-memory session tracking for onboarding steps
-USER_SESSIONS: Dict[int, Dict[str, Any]] = {}
-
-CITIES_INFO = {
-    "bogota": {"name": "Bogotá", "currency": "COP $", "presets": [800000, 1200000, 1800000, 2500000]},
-    "nyc": {"name": "New York City", "currency": "$", "presets": [900, 1400, 2000, 3000]},
-    "london": {"name": "London", "currency": "£", "presets": [650, 950, 1400, 2200]},
-    "tokyo": {"name": "Tokyo", "currency": "¥", "presets": [60000, 90000, 130000, 180000]},
-    "paris": {"name": "Paris", "currency": "€", "presets": [600, 900, 1300, 1800]},
-    "berlin": {"name": "Berlin", "currency": "€", "presets": [500, 800, 1200, 1600]},
-    "dubai": {"name": "Dubai", "currency": "AED ", "presets": [2500, 4500, 7000, 10000]},
-    "sf": {"name": "San Francisco", "currency": "$", "presets": [1000, 1600, 2400, 3200]},
-    "all": {"name": "All Metropolises (Global Radar)", "currency": "$", "presets": [500, 1000, 1500, 2500]},
-}
+USERS_DB_FILE = Path(__file__).with_name("users_db.json")
+USER_SESSIONS = {}
+# ponytail: one listener owns this JSON file; use SQLite profiles if multiple writer processes are needed.
+PROFILE_LOCK = threading.Lock()
+TYPE_LABELS = {"room": "Room", "studio": "Studio", "entire_apartment": "Entire apartment", "sublease": "Sublease", "all": "Any housing type"}
 
 
-def load_users_db() -> Dict[str, Any]:
-    """Load user preferences from JSON database."""
-    if os.path.exists(USERS_DB_FILE):
-        try:
-            with open(USERS_DB_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-
-
-def save_user_profile(chat_id: int, profile: Dict[str, Any]) -> None:
-    """Save user radar profile to JSON database."""
-    db = load_users_db()
-    db[str(chat_id)] = profile
-    with open(USERS_DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(db, f, indent=2, ensure_ascii=False)
-
-
-def send_api_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Send request to Telegram Bot API."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{endpoint}"
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
+def load_users_db(path=None):
+    path = Path(path or USERS_DB_FILE)
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        print(f"[Telegram API Error]: {e}")
-        return {"ok": False, "error": str(e)}
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    if not isinstance(data, dict) or any(not isinstance(profile, dict) for profile in data.values()):
+        raise ValueError("Invalid subscriber database; preserve it and repair it before saving")
+    return data
 
 
-def answer_callback(callback_query_id: str) -> None:
-    """Acknowledge Telegram callback query to stop loading spinner."""
-    send_api_request("answerCallbackQuery", {"callback_query_id": callback_query_id})
+def save_user_profile(chat_id, profile, path=None):
+    """Serialize this listener's writes, then atomically replace the file for batch readers."""
+    path = Path(path or USERS_DB_FILE)
+    with PROFILE_LOCK:
+        data = load_users_db(path)  # Unreadable data must never become an empty database.
+        data[str(chat_id)] = profile
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix="users_db.", suffix=".tmp", delete=False) as file:
+                temporary = Path(file.name)
+                json.dump(data, file, ensure_ascii=False, indent=2, allow_nan=False)
+                file.flush()
+                os.fsync(file.fileno())
+            temporary.replace(path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
 
-# --- WIZARD STEPS ---
-
-def step_1_ask_city(chat_id: int, user_first_name: str) -> None:
-    """Step 1: Ask target city."""
-    USER_SESSIONS[chat_id] = {"step": "CITY"}
-    
-    keyboard = [
-        [{"text": "🇨🇴 Bogotá", "callback_data": "city:bogota"}, {"text": "🇺🇸 New York City", "callback_data": "city:nyc"}],
-        [{"text": "🇬🇧 London", "callback_data": "city:london"}, {"text": "🇯🇵 Tokyo", "callback_data": "city:tokyo"}],
-        [{"text": "🇫🇷 Paris", "callback_data": "city:paris"}, {"text": "🇩🇪 Berlin", "callback_data": "city:berlin"}],
-        [{"text": "🇦🇪 Dubai", "callback_data": "city:dubai"}, {"text": "🇺🇸 San Francisco", "callback_data": "city:sf"}],
-        [{"text": "🌐 All Metropolises (Global Radar)", "callback_data": "city:all"}],
-    ]
-    
-    text = (
-        f"👋 *Welcome {user_first_name} to RentScanner AI!*\n"
-        f"The open-source radar against runaway gentrification & predatory broker cartels.\n\n"
-        f"🎯 *STEP 1 / 5: Target Metropolis*\n"
-        f"Select the metropolis you want us to scan for off-market sublease deals:"
-    )
-    send_api_request("sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "reply_markup": {"inline_keyboard": keyboard}})
+def parse_budget(text):
+    if not isinstance(text, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]{1,2})?", text.strip()):
+        return None
+    value = float(text.strip())
+    return value if math.isfinite(value) else None
 
 
-def step_2_ask_type(chat_id: int) -> None:
-    """Step 2: Ask housing typology."""
-    USER_SESSIONS[chat_id]["step"] = "TYPE"
-    city_name = USER_SESSIONS[chat_id].get("cityName", "your city")
-
-    keyboard = [
-        [{"text": "🛏️ Room / Flatshare", "callback_data": "type:room"}],
-        [{"text": "🏢 Studio / Efficiency", "callback_data": "type:studio"}],
-        [{"text": "🏠 Entire Apartment", "callback_data": "type:entire_apartment"}],
-        [{"text": "📜 Direct Sublease", "callback_data": "type:sublease"}],
-        [{"text": "⚡ Any Typology (No Preference)", "callback_data": "type:all"}],
-    ]
-
-    text = (
-        f"📍 Selected Metropolis: *{city_name}*\n\n"
-        f"🏠 *STEP 2 / 5: Housing Typology*\n"
-        f"What kind of living arrangement are you seeking?"
-    )
-    send_api_request("sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "reply_markup": {"inline_keyboard": keyboard}})
+def _message(chat_id, text, keyboard=None):
+    payload = {"chat_id": chat_id, "text": text}
+    if keyboard is not None:
+        payload["reply_markup"] = {"inline_keyboard": [[{"text": label, "callback_data": value}] for label, value in keyboard]}
+    result = send_api_request("sendMessage", payload)
+    session = USER_SESSIONS.get(chat_id)
+    if session is not None:
+        session["messageId"] = result.get("result", {}).get("message_id")
+    return result
 
 
-def step_3_ask_budget(chat_id: int) -> None:
-    """Step 3: Ask max budget."""
-    USER_SESSIONS[chat_id]["step"] = "BUDGET"
-    city_id = USER_SESSIONS[chat_id].get("cityId", "bogota")
-    city_info = CITIES_INFO.get(city_id, CITIES_INFO["all"])
-    currency = city_info["currency"]
-    presets = city_info["presets"]
-
-    keyboard = [
-        [
-            {"text": f"{currency}{presets[0]:,}", "callback_data": f"budget:{presets[0]}"},
-            {"text": f"{currency}{presets[1]:,}", "callback_data": f"budget:{presets[1]}"},
-        ],
-        [
-            {"text": f"{currency}{presets[2]:,}", "callback_data": f"budget:{presets[2]}"},
-            {"text": f"{currency}{presets[3]:,}", "callback_data": f"budget:{presets[3]}"},
-        ],
-        [{"text": "♾️ No Budget Limit (Any Price)", "callback_data": "budget:any"}],
-    ]
-
-    text = (
-        f"💰 *STEP 3 / 5: Maximum Monthly Budget*\n"
-        f"Select a quick preset or *type your exact number in chat* (e.g. `{presets[1]}`):"
-    )
-    send_api_request("sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "reply_markup": {"inline_keyboard": keyboard}})
+def _ask(chat_id, step):
+    session = USER_SESSIONS[chat_id]
+    session["step"] = step
+    if step == "CITY":
+        text = "Step 1/5: Choose your city. All-cities budgets use USD."
+        choices = [(info["name"], f"city:{key}") for key, info in CITIES_INFO.items()]
+    elif step == "TYPE":
+        text = "Step 2/5: Choose a housing type. Unknown listing types will not match a specific preference."
+        choices = [(label, f"type:{key}") for key, label in TYPE_LABELS.items()]
+    elif step == "BUDGET":
+        info = CITIES_INFO[session["cityId"]]
+        text = f"Step 3/5: Maximum monthly rent in {info['code']}. Choose a preset or type a number such as 1000.50, without separators."
+        choices = [(f"{value:,} {info['code']}", f"budget:{value}") for value in info["presets"]] + [("No limit", "budget:any")]
+    elif step == "BROKER":
+        text = "Step 4/5: Require no broker fee? Listings with unknown fee status will not match this requirement."
+        choices = [("No broker fee required", "broker:yes"), ("No preference", "broker:any")]
+    else:
+        text = "Step 5/5: Require utilities included? Listings with unknown utilities status will not match this requirement."
+        choices = [("Utilities included required", "bills:yes"), ("No preference", "bills:any")]
+    _message(chat_id, text, choices)
 
 
-def step_4_ask_broker_fee(chat_id: int) -> None:
-    """Step 4: Ask broker fee preference."""
-    USER_SESSIONS[chat_id]["step"] = "BROKER"
-
-    keyboard = [
-        [{"text": "🚫 Yes, 0% Broker Fee Mandatory", "callback_data": "broker:yes"}],
-        [{"text": "⚡ No Preference (Allow broker listings)", "callback_data": "broker:any"}],
-    ]
-
-    text = (
-        f"🛡️ *STEP 4 / 5: Zero Broker Fee Protection*\n"
-        f"Require direct peer-to-peer sublet arrangements (bypassing 15% broker commissions)?"
-    )
-    send_api_request("sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "reply_markup": {"inline_keyboard": keyboard}})
-
-
-def step_5_ask_bills(chat_id: int) -> None:
-    """Step 5: Ask utilities included preference."""
-    USER_SESSIONS[chat_id]["step"] = "BILLS"
-
-    keyboard = [
-        [{"text": "💡 Yes, Utilities Included Mandatory", "callback_data": "bills:yes"}],
-        [{"text": "⚡ No Preference (Pay bills separately)", "callback_data": "bills:any"}],
-    ]
-
-    text = (
-        f"💡 *STEP 5 / 5: Utilities & High-Speed WiFi*\n"
-        f"Require utilities (electricity, water, gas, internet) bundled into the flat monthly rent?"
-    )
-    send_api_request("sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "reply_markup": {"inline_keyboard": keyboard}})
-
-
-def finish_wizard(chat_id: int, user_info: Dict[str, Any]) -> None:
-    """Step 6: Confirm and activate personal radar."""
-    session = USER_SESSIONS.get(chat_id, {})
-    
-    city_id = session.get("cityId", "bogota")
-    city_name = session.get("cityName", "Bogotá")
-    housing_type = session.get("type", "all")
-    max_budget = session.get("maxBudget")
-    no_broker = session.get("noBrokerFee", False)
-    bills_included = session.get("billsIncluded", False)
-    currency = CITIES_INFO.get(city_id, {}).get("currency", "$")
-
-    type_labels = {
-        "room": "🛏️ Room / Flatshare",
-        "studio": "🏢 Studio / Efficiency",
-        "entire_apartment": "🏠 Entire Apartment",
-        "sublease": "📜 Direct Sublease",
-        "all": "⚡ Any Typology (No Preference)",
-    }
-
-    budget_str = f"{currency}{max_budget:,} / month" if max_budget else "♾️ No Limit"
-    broker_str = "✅ Yes (0% Broker Fee)" if no_broker else "⚡ No Preference"
-    bills_str = "✅ Yes (Utilities Included)" if bills_included else "⚡ No Preference"
-
-    # Save to users_db.json
+def finish_wizard(chat_id, user_info):
+    session = USER_SESSIONS[chat_id]
+    info = CITIES_INFO[session["cityId"]]
     profile = {
-        "chatId": chat_id,
-        "username": user_info.get("username", "Renter"),
-        "firstName": user_info.get("first_name", "User"),
-        "cityId": city_id,
-        "cityName": city_name,
-        "housingType": housing_type,
-        "maxBudget": max_budget,
-        "currency": currency,
-        "noBrokerFeeOnly": no_broker,
-        "utilitiesIncludedOnly": bills_included,
-        "sortBy": "dealScore",
-        "minDealScore": 90,
-        "active": True,
-        "configuredAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "chatId": chat_id, "firstName": str(user_info.get("first_name", "Renter"))[:80],
+        "cityId": session["cityId"], "cityName": info["name"], "currency": info["currency"], "currencyCode": info["code"],
+        "housingType": session["type"], "maxBudget": session["maxBudget"],
+        "noBrokerFeeOnly": session["noBrokerFee"], "utilitiesIncludedOnly": session["billsIncluded"],
+        "minDealScore": DEFAULT_THRESHOLD, "active": True,
     }
-    save_user_profile(chat_id, profile)
-
-    confirmation_text = (
-        f"🎯 *PERSONAL RADAR ARMED & ACTIVATED!*\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📍 *Metropolis:* {city_name}\n"
-        f"🏠 *Housing:* {type_labels.get(housing_type, housing_type)}\n"
-        f"💰 *Max Budget:* {budget_str}\n"
-        f"🚫 *0% Broker Fee:* {broker_str}\n"
-        f"💡 *Bills Included:* {bills_str}\n"
-        f"⚡ *Ranking Order:* `NVIDIA Nemotron Deal Score` (>= 90/100)\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🤖 *Radar Status:* `ACTIVE MONITORING`\n"
-        f"Every 30 minutes, when NVIDIA Nemotron audits fresh listings in {city_name}, "
-        f"if a verified deal exceeds Deal Score 90/100 and matches your radar, **you will receive an immediate private alert right here**.\n\n"
-        f"💡 _Useful Commands:_\n"
-        f"• `/radar` or `/status`: View your active configuration\n"
-        f"• `/config`: Change your filters anytime\n"
-        f"• `/test`: Receive an instant sample alert"
-    )
-
-    send_api_request("sendMessage", {"chat_id": chat_id, "text": confirmation_text, "parse_mode": "Markdown"})
+    try:
+        save_user_profile(chat_id, profile)
+    except (OSError, ValueError):
+        _message(chat_id, "Could not save your settings. Your previous subscription was preserved. Try /config later.")
+    else:
+        _message(chat_id, "Preferences saved for 95+ deals. Alerts are sent when the operator runs the batch dispatcher; no delivery schedule is guaranteed. Use /config to change settings or /stop to stop alerts.")
     USER_SESSIONS.pop(chat_id, None)
 
 
-# --- DISPATCHERS & HANDLERS ---
-
-def handle_callback_query(cq: Dict[str, Any]) -> None:
-    """Handle inline button clicks."""
-    cq_id = cq["id"]
-    from_user = cq["from"]
-    chat_id = from_user["id"]
-    data = cq.get("data", "")
-
-    answer_callback(cq_id)
-
-    if chat_id not in USER_SESSIONS:
-        USER_SESSIONS[chat_id] = {}
-
-    session = USER_SESSIONS[chat_id]
-
-    if data.startswith("city:"):
-        city_id = data.split(":", 1)[1]
-        session["cityId"] = city_id
-        session["cityName"] = CITIES_INFO.get(city_id, {}).get("name", "Global")
-        step_2_ask_type(chat_id)
-
-    elif data.startswith("type:"):
-        housing_type = data.split(":", 1)[1]
-        session["type"] = housing_type
-        step_3_ask_budget(chat_id)
-
-    elif data.startswith("budget:"):
-        budget_val = data.split(":", 1)[1]
-        session["maxBudget"] = int(budget_val) if budget_val != "any" else None
-        step_4_ask_broker_fee(chat_id)
-
-    elif data.startswith("broker:"):
-        broker_val = data.split(":", 1)[1]
-        session["noBrokerFee"] = (broker_val == "yes")
-        step_5_ask_bills(chat_id)
-
-    elif data.startswith("bills:"):
-        bills_val = data.split(":", 1)[1]
-        session["billsIncluded"] = (bills_val == "yes")
-        finish_wizard(chat_id, from_user)
-
-
-def handle_text_message(msg: Dict[str, Any]) -> None:
-    """Handle text message from user."""
-    chat_id = msg["chat"]["id"]
-    from_user = msg.get("from", {})
-    text = msg.get("text", "").strip()
-
-    # Commands
-    if text.startswith("/start") or text.startswith("/config"):
-        step_1_ask_city(chat_id, from_user.get("first_name", "Friend"))
+def handle_callback_query(query):
+    chat = query.get("message", {}).get("chat", {})
+    user = query.get("from", {})
+    chat_id = chat.get("id")
+    if chat.get("type") != "private" or type(chat_id) is not int or chat_id != user.get("id"):
         return
-
-    if text.startswith("/radar") or text.startswith("/status"):
-        db = load_users_db()
-        user_prof = db.get(str(chat_id))
-        if user_prof:
-            send_api_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": (
-                    f"📡 *YOUR ACTIVE RADAR:*\n"
-                    f"• Metropolis: *{user_prof.get('cityName')}*\n"
-                    f"• Type: *{user_prof.get('housingType')}*\n"
-                    f"• Budget: *{user_prof.get('currency')}{user_prof.get('maxBudget', 'No limit')}*\n"
-                    f"• 0% Broker Fee: *{user_prof.get('noBrokerFeeOnly')}*\n"
-                    f"• Bills Included: *{user_prof.get('utilitiesIncludedOnly')}*\n"
-                    f"• Min Deal Score: *{user_prof.get('minDealScore')}/100*\n\n"
-                    f"Type `/config` if you want to modify your filters."
-                ),
-                "parse_mode": "Markdown",
-            })
-        else:
-            send_api_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": "You do not have an active radar yet. Type `/start` to configure it in 1 minute.",
-            })
-        return
-
-    if text.startswith("/test"):
-        from bot import send_telegram_alert, SAMPLE_BOGOTA_DEAL
-        send_api_request("sendMessage", {
-            "chat_id": chat_id,
-            "text": "⚡ Dispatching instant sample alert to your chat...",
-        })
-        send_telegram_alert(SAMPLE_BOGOTA_DEAL, chat_id)
-        return
-
-    # If user is in the BUDGET step and typed a numeric amount
     session = USER_SESSIONS.get(chat_id)
-    if session and session.get("step") == "BUDGET":
-        digits = "".join([c for c in text if c.isdigit()])
-        if digits:
-            session["maxBudget"] = int(digits)
-            step_4_ask_broker_fee(chat_id)
-            return
+    prefix, separator, value = str(query.get("data", "")).partition(":")
+    expected = {"city": "CITY", "type": "TYPE", "budget": "BUDGET", "broker": "BROKER", "bills": "BILLS"}
+    valid = session and separator and session.get("step") == expected.get(prefix) and session.get("messageId") is not None and session["messageId"] == query["message"].get("message_id")
+    if valid:
+        if prefix == "city":
+            valid = value in CITIES_INFO
+        elif prefix == "type":
+            valid = value in HOUSING_TYPES
+        elif prefix == "budget":
+            valid = value == "any" or parse_budget(value) is not None
+        else:
+            valid = value in {"yes", "any"}
+    send_api_request("answerCallbackQuery", {"callback_query_id": query.get("id"), "text": "" if valid else "This menu expired. Use /config to start again."})
+    if not valid:
+        return
+    if prefix == "city":
+        session["cityId"] = value
+        _ask(chat_id, "TYPE")
+    elif prefix == "type":
+        session["type"] = value
+        _ask(chat_id, "BUDGET")
+    elif prefix == "budget":
+        session["maxBudget"] = None if value == "any" else parse_budget(value)
+        _ask(chat_id, "BROKER")
+    elif prefix == "broker":
+        session["noBrokerFee"] = value == "yes"
+        _ask(chat_id, "BILLS")
+    else:
+        session["billsIncluded"] = value == "yes"
+        finish_wizard(chat_id, user)
 
-    # Fallback default response
-    send_api_request("sendMessage", {
-        "chat_id": chat_id,
-        "text": (
-            "🤖 *RentScanner AI Assistant*\n"
-            "Type `/start` to configure your personal sublease radar or `/radar` to inspect your active filters."
-        ),
-        "parse_mode": "Markdown",
-    })
+
+def handle_text_message(message):
+    chat = message.get("chat", {})
+    chat_id = chat.get("id")
+    if chat.get("type") != "private" or type(chat_id) is not int or chat_id <= 0:
+        return
+    text = message.get("text", "").strip()
+    command = text.split(maxsplit=1)[0].split("@", 1)[0] if text else ""
+    if command in {"/start", "/config"}:
+        USER_SESSIONS[chat_id] = {}
+        _ask(chat_id, "CITY")
+    elif command in {"/status", "/radar", "/stop"}:
+        try:
+            profile = load_users_db().get(str(chat_id))
+            if command == "/stop":
+                USER_SESSIONS.pop(chat_id, None)
+                if profile:
+                    save_user_profile(chat_id, {**profile, "active": False})
+                _message(chat_id, "Alerts stopped. Use /start to subscribe again.")
+            elif profile:
+                status = "active" if profile.get("active") is True else "stopped"
+                budget = profile.get("maxBudget")
+                threshold = profile.get("minDealScore", DEFAULT_THRESHOLD)
+                threshold = max(DEFAULT_THRESHOLD, threshold) if number(threshold, maximum=100) else "unavailable"
+                _message(chat_id, (
+                    f"Radar {status}. City: {profile.get('cityName')}. Housing: {profile.get('housingType')}.\n"
+                    f"Budget: {'No limit' if budget is None else budget} {profile.get('currencyCode', profile.get('currency', ''))}.\n"
+                    f"No broker fee required: {profile.get('noBrokerFeeOnly') is True}. "
+                    f"Utilities included required: {profile.get('utilitiesIncludedOnly') is True}.\n"
+                    f"Minimum score: {threshold}. Change with /config or stop with /stop."
+                ))
+            else:
+                _message(chat_id, "No subscription found. Use /start to set one up.")
+        except (OSError, ValueError):
+            _message(chat_id, "Subscriber settings are unavailable. No stored settings were changed. Please try later.")
+    elif command == "/test":
+        send_telegram_alert(SAMPLE_BOGOTA_DEAL, chat_id)
+    elif USER_SESSIONS.get(chat_id, {}).get("step") == "BUDGET":
+        value = parse_budget(text)
+        if value is None:
+            _message(chat_id, "Enter 0 or more with up to two decimal places, for example 1000.50. Do not use separators.")
+        else:
+            USER_SESSIONS[chat_id]["maxBudget"] = value
+            _ask(chat_id, "BROKER")
+    else:
+        _message(chat_id, "Use /start to subscribe, /status to view settings or /stop to stop alerts.")
 
 
 def run_polling():
-    """Main long polling loop."""
-    print("=" * 60)
-    print("RentScanner AI // Telegram Interactive Bot Listener")
-    print(f"Token: {TELEGRAM_BOT_TOKEN[:10]}...")
-    print("Listening for user interactions in real time...")
-    print("=" * 60)
-
-    last_offset = 0
-
+    if send_api_request("getMe", {}).get("ok") is not True:
+        raise SystemExit("Telegram bot is unavailable. Check the server-side token.")
+    offset = 0
     while True:
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={last_offset}&timeout=20"
-            req = urllib.request.Request(url)
-            with urllib.request.urlopen(req, timeout=25) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                updates = data.get("result", [])
-
-                for update in updates:
-                    last_offset = update["update_id"] + 1
-
-                    if "callback_query" in update:
-                        handle_callback_query(update["callback_query"])
-                    elif "message" in update:
-                        handle_text_message(update["message"])
-
-        except urllib.error.URLError:
+        response = send_api_request("getUpdates", {"offset": offset, "timeout": 20}, timeout=25)
+        if response.get("ok") is not True:
             time.sleep(3)
-        except Exception as e:
-            print(f"[Polling loop error]: {e}")
-            time.sleep(2)
+            continue
+        for update in response.get("result", []):
+            try:
+                if "callback_query" in update:
+                    handle_callback_query(update["callback_query"])
+                elif "message" in update:
+                    handle_text_message(update["message"])
+            except (OSError, ValueError, KeyError, TypeError):
+                print("Could not process a bot update; no credentials or message contents logged.")
+            offset = update["update_id"] + 1
 
 
 if __name__ == "__main__":

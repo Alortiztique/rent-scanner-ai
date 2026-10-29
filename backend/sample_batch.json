@@ -1,6 +1,11 @@
 [
   {
     "id": "bogota-batch-01",
+    "demo": true,
+    "type": "studio",
+    "currency": "COP",
+    "noBrokerFee": true,
+    "utilitiesIncluded": true,
     "title": "Chapinero Alto Terrace Studio // 4-Month Direct Sublease",
     "cityId": "bogota",
     "cityName": "Bogotá",
@@ -14,6 +19,7 @@
     "source": "Reddit Sublet (r/bogota)",
     "sourceUrl": "https://reddit.com/r/bogota/comments/chapinero_sublet",
     "nemotronAudit": {
+      "summary": "Sample audit: review the sublease term and confirm the source before paying.",
       "scamRiskScore": 0,
       "gentrificationIndex": "Anti-Gentrification Champion",
       "fairRentScore": 96,
@@ -26,6 +32,9 @@
   },
   {
     "id": "london-batch-02",
+    "demo": true,
+    "type": "room",
+    "currency": "GBP",
     "title": "Deptford Modern Flatshare // Double Bedroom",
     "cityId": "london",
     "cityName": "London",
@@ -49,6 +58,11 @@
   },
   {
     "id": "nyc-batch-03",
+    "demo": true,
+    "type": "room",
+    "currency": "USD",
+    "noBrokerFee": true,
+    "utilitiesIncluded": true,
     "title": "Bushwick Industrial Converted Loft // 3-Month Sublet Room",
     "cityId": "nyc",
     "cityName": "New York City",
@@ -74,6 +88,9 @@
   },
   {
     "id": "berlin-batch-04",
+    "demo": true,
+    "type": "entire_apartment",
+    "currency": "EUR",
     "title": "Neukölln 1-Room Zwischenmiete // Standard Contract",
     "cityId": "berlin",
     "cityName": "Berlin",

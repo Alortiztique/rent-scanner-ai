@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Bell, ExternalLink, X } from 'lucide-react';
 import { CITIES } from '../data/cities';
 import type { AlertPreferences, Listing } from '../types';
-import { findAlertPreview, formatDealAlert, getAlertPreferences, saveAlertPreferences, TELEGRAM_BOT_URL } from '../services/notifications';
+import { findAlertPreview, formatDealAlert, getAlertPreferences, saveAlertPreferences, TELEGRAM_BOT_URL, MIN_ALERT_SCORE } from '../services/notifications';
 import { MODAL_DIALOG_CLASS, useModalDialog } from './useModalDialog';
 
 interface DealAlertsModalProps {
@@ -105,7 +105,7 @@ function DealAlertsDialog({ onClose, defaultCityId, listings }: Omit<DealAlertsM
               <label className="block text-xs text-zinc-300">
                 Minimum sample deal score
                 <select value={preferences.minDealScore} onChange={(event) => update({ minDealScore: Number(event.target.value) })} className="mt-1 w-full p-2 bg-zinc-900 border border-zinc-700 focus-visible:outline-2 focus-visible:outline-emerald-400">
-                  {Array.from({ length: 11 }, (_, index) => 90 + index).map((score) => <option key={score} value={score}>{score} / 100</option>)}
+                  {Array.from({ length: 101 - MIN_ALERT_SCORE }, (_, index) => MIN_ALERT_SCORE + index).map((score) => <option key={score} value={score}>{score} / 100</option>)}
                 </select>
               </label>
             </div>

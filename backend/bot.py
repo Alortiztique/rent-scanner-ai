@@ -1,296 +1,117 @@
-#!/usr/bin/env python3
-"""
-RentScanner AI // Telegram Alert Notifier
-Nebius x NVIDIA Global AI Hackathon (TASK-06)
-
-Dispatches real-time rental deal alerts to Telegram channels or private chats
-when high-scoring opportunities (Deal Score >= 90) are audited by NVIDIA Nemotron.
-"""
-
-import os
-import sys
+"""Telegram transport and plain-text messages. Credentials never reach the browser."""
+import argparse
 import json
-import urllib.request
+import os
+from pathlib import Path
 import urllib.error
-from typing import Dict, Any, Optional
+import urllib.request
 
-# Load token from environment or local .env
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+from alert_model import normalize_deal, number
 
-# Try reading from .env if not found in environment
-if not TELEGRAM_BOT_TOKEN:
-    env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("TELEGRAM_BOT_TOKEN="):
-                    TELEGRAM_BOT_TOKEN = line.split("=", 1)[1].strip().strip('"').strip("'")
+
+def _bot_token():
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        path = Path(__file__).resolve().parent.parent / ".env"
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip().startswith("TELEGRAM_BOT_TOKEN="):
+                    token = line.strip().split("=", 1)[1].strip().strip('\"\'')
                     break
+    return token
 
 
-def get_bot_info() -> Dict[str, Any]:
-    """Verify bot token and return bot identity."""
-    if not TELEGRAM_BOT_TOKEN:
-        return {"ok": False, "error": "TELEGRAM_BOT_TOKEN not configured"}
-    
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe"
+def send_api_request(endpoint, payload, timeout=15):
+    if endpoint not in {"sendMessage", "getMe", "getUpdates", "answerCallbackQuery"}:
+        raise ValueError("Unsupported Telegram method")
     try:
-        with urllib.request.urlopen(url, timeout=10) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-def get_latest_chat_id() -> Optional[int]:
-    """Fetch the chat_id of the most recent user who sent a message to the bot."""
-    if not TELEGRAM_BOT_TOKEN:
-        return None
-    
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-    try:
-        with urllib.request.urlopen(url, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            results = data.get("result", [])
-            if results:
-                last_msg = results[-1].get("message", {}) or results[-1].get("channel_post", {})
-                chat = last_msg.get("chat", {})
-                return chat.get("id")
-    except Exception as e:
-        print(f"[Error fetching updates]: {e}")
-    return None
-
-
-def format_deal_alert(deal: Dict[str, Any]) -> str:
-    """Format a rental deal with brutalist cyberpunk markdown for Telegram (English)."""
-    city = deal.get("cityName", deal.get("city", "Global"))
-    neighborhood = deal.get("neighborhood", "Central Corridor")
-    title = deal.get("title", deal.get("raw_title", "Off-Market Sublet Opportunity"))
-    price_usd = deal.get("priceUsd", 0)
-    price_local = deal.get("priceLocal", price_usd)
-    currency_symbol = deal.get("currencySymbol", "$")
-    market_median = deal.get("originalMarketPriceUsd", int(price_usd * 1.5))
-    savings = deal.get("savingsPercentage", 35)
-    deal_score = deal.get("dealScore", deal.get("audit", {}).get("fairRentScore", 92))
-    source = deal.get("source", "Tavily Web Scout")
-    source_url = deal.get("sourceUrl", deal.get("url", "https://rent-scanner-ai.pages.dev"))
-
-    audit = deal.get("nemotronAudit", deal.get("audit", {}))
-    scam_risk = audit.get("scamRiskScore", 0)
-    gentrification_index = audit.get("gentrificationIndex", "Anti-Gentrification Champion")
-    perks = audit.get("verifiedPerks", ["Direct peer-to-peer sublet", "Zero broker commission"])
-
-    perks_text = "\n".join([f"  ✓ {p}" for p in perks[:3]])
-
-    message = (
-        f"🚨 *RENTSCANNER AI // RADAR ALERT*\n"
-        f"📍 *{city.upper()}* • {neighborhood}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🏷️ *{title}*\n\n"
-        f"💰 *{currency_symbol}{price_local:,}* / month "
-        f"(`-{savings}%` vs Median: ${market_median:,})\n\n"
-        f"🛡️ *NEMOTRON HOUSING AUDIT:*\n"
-        f"• *Deal Score:* `{deal_score}/100` (HISTORIC ANOMALY)\n"
-        f"• *Scam Risk:* `{scam_risk}/10` (Verified Lease)\n"
-        f"• *Status:* _{gentrification_index}_\n\n"
-        f"✨ *Verified Perks:*\n"
-        f"{perks_text}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📡 Source: `{source}`\n"
-        f"🔗 [View Original Posting]({source_url})\n\n"
-        f"🤖 _Audited by NVIDIA Nemotron-3-Ultra on Nebius Token Factory_"
-    )
-    return message
-
-
-def send_telegram_alert(deal: Dict[str, Any], chat_id: Any) -> Dict[str, Any]:
-    """Send formatted deal alert to Telegram chat or channel."""
-    if not TELEGRAM_BOT_TOKEN:
-        print("[Telegram Bot] Error: No token configured.")
-        return {"ok": False, "error": "No token"}
-
-    message_text = format_deal_alert(deal)
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-
-    payload = {
-        "chat_id": chat_id,
-        "text": message_text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": False,
-    }
-
-    try:
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
+        token = _bot_token()
+        if not token:
+            return {"ok": False, "error": "TELEGRAM_BOT_TOKEN is not configured"}
+        request = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/{endpoint}",
+            data=json.dumps(payload, allow_nan=False).encode("utf-8"),
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            print(f"[Telegram Bot] Alert successfully dispatched to chat {chat_id}!")
-            return data
-    except urllib.error.HTTPError as e:
-        err_content = e.read().decode("utf-8")
-        print(f"[Telegram Bot HTTP Error {e.code}]: {err_content}")
-        return {"ok": False, "error": err_content}
-    except Exception as e:
-        print(f"[Telegram Bot Error]: {e}")
-        return {"ok": False, "error": str(e)}
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            return {"ok": False, "error": "Telegram rejected the request"}
+        return result
+    except urllib.error.HTTPError as error:
+        return {"ok": False, "error": f"Telegram returned HTTP {error.code}"}
+    except (OSError, ValueError):
+        # Exception strings can contain a URL with the bot token. Never log or return them.
+        return {"ok": False, "error": "Telegram request failed"}
 
 
-
-def format_personal_alert(deal: Dict[str, Any], user_profile: Dict[str, Any]) -> str:
-    """Format a personalized deal alert for a registered user's custom radar."""
-    first_name = user_profile.get("firstName", "Renter")
-    city = deal.get("cityName", deal.get("city", "Global"))
-    neighborhood = deal.get("neighborhood", "Central Corridor")
-    title = deal.get("title", deal.get("raw_title", "Off-Market Sublet Opportunity"))
-    price_usd = deal.get("priceUsd", 0)
-    price_local = deal.get("priceLocal", price_usd)
-    currency_symbol = deal.get("currencySymbol", "$")
-    market_median = deal.get("originalMarketPriceUsd", int(price_usd * 1.5))
-    savings = deal.get("savingsPercentage", 35)
-    deal_score = deal.get("dealScore", deal.get("audit", {}).get("fairRentScore", 92))
-    source = deal.get("source", "Tavily Web Scout")
-    source_url = deal.get("sourceUrl", deal.get("url", "https://rent-scanner-ai.pages.dev"))
-
-    audit = deal.get("nemotronAudit", deal.get("audit", {}))
-    scam_risk = audit.get("scamRiskScore", 0)
-    gentrification_index = audit.get("gentrificationIndex", "Anti-Gentrification Champion")
-    perks = audit.get("verifiedPerks", ["Direct peer-to-peer sublet", "Zero broker commission"])
-
-    perks_text = "\n".join([f"  ✓ {p}" for p in perks[:3]])
-
-    # Radar match reason
-    match_reasons = [f"Metropolis: {user_profile.get('cityName', city)}"]
-    if user_profile.get("maxBudget"):
-        match_reasons.append(f"Under your budget ({user_profile.get('currency', '$')}{user_profile['maxBudget']:,})")
-    if user_profile.get("housingType") and user_profile.get("housingType") != "all":
-        match_reasons.append(f"Typology: {user_profile['housingType'].title()}")
-    match_reasons.append(f"Deal Score: {deal_score}/100 (Threshold >= {user_profile.get('minDealScore', 90)})")
-
-    reasons_text = "\n".join([f"  🎯 {r}" for r in match_reasons])
-
-    message = (
-        f"🎯 *RENTSCANNER AI // PERSONAL RADAR MATCH*\n"
-        f"👤 *Direct Alert for:* {first_name}\n"
-        f"📍 *{city.upper()}* • {neighborhood}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🏷️ *{title}*\n\n"
-        f"💰 *{currency_symbol}{price_local:,}* / month "
-        f"(`-{savings}%` vs Median: ${market_median:,})\n\n"
-        f"🛡️ *NEMOTRON HOUSING AUDIT:*\n"
-        f"• *Deal Score:* `{deal_score}/100` (HISTORIC ANOMALY)\n"
-        f"• *Scam Risk:* `{scam_risk}/10` (Verified Lease)\n"
-        f"• *Status:* _{gentrification_index}_\n\n"
-        f"✨ *Verified Perks:*\n"
-        f"{perks_text}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔍 *Radar Criteria Match:*\n"
-        f"{reasons_text}\n\n"
-        f"📡 Source: `{source}`\n"
-        f"🔗 [View Original Posting]({source_url})\n\n"
-        f"🤖 _Audited by NVIDIA Nemotron-3-Ultra on Nebius Token Factory_\n"
-        f"⚙️ _Modify your alert filters anytime with /config_"
-    )
-    return message
+def format_deal_alert(raw):
+    deal = normalize_deal(raw)
+    if deal is None:
+        raise ValueError("The alert needs a supported city, source link and numeric score")
+    audit = deal["audit"]
+    lines = ["RENTSCANNER // DEMO ALERT" if deal["demo"] else "RENTSCANNER // RENTAL ALERT"]
+    if deal["demo"]:
+        lines.append("Sample data. Not a live listing or a verified lease.")
+    lines.extend([deal["cityName"], str(deal["title"])[:200]])
+    if deal["priceLocal"] is not None and deal["currency"]:
+        lines.append(f"Monthly asking rent: {deal['priceLocal']:,.2f} {deal['currency']}")
+    elif deal["priceUsd"] is not None:
+        lines.append(f"Monthly asking rent: {deal['priceUsd']:,.2f} USD")
+    else:
+        lines.append("Asking rent: unavailable")
+        estimate = audit.get("estimatedPriceUsd")
+        if number(estimate):
+            lines.append(f"Model estimate: {estimate:,.2f} USD per month, not a confirmed asking rent")
+    lines.append(f"Provided deal score: {deal['dealScore']}/100")
+    risk = audit.get("scamRiskScore")
+    if number(risk, maximum=10):
+        lines.append(f"Model scam-risk assessment: {risk}/10, not verification")
+    lines.append("Audit summary: " + (deal["summary"][:600] if deal["summary"] else "Not supplied"))
+    if deal["model"]:
+        lines.append("Reported model: " + deal["model"][:100])
+    lines.extend(["Source: " + deal["sourceUrl"], "Confirm price, availability and lease terms with the source."])
+    return "\n".join(lines)
 
 
-def send_personal_alert(deal: Dict[str, Any], user_profile: Dict[str, Any]) -> Dict[str, Any]:
-    """Send personalized deal alert to a specific registered user."""
+def format_personal_alert(deal, user_profile):
+    name = str(user_profile.get("firstName", "Renter"))[:80]
+    return f"Personal radar for {name}\n{format_deal_alert(deal)}\nChange filters with /config or stop alerts with /stop."
+
+
+def send_telegram_alert(deal, chat_id):
+    return send_api_request("sendMessage", {"chat_id": chat_id, "text": format_deal_alert(deal)})
+
+
+def send_personal_alert(deal, user_profile):
     chat_id = user_profile.get("chatId")
-    if not chat_id:
-        return {"ok": False, "error": "No chatId in user profile"}
-
-    message_text = format_personal_alert(deal, user_profile)
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-
-    payload = {
-        "chat_id": chat_id,
-        "text": message_text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": False,
-    }
-
-    try:
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            print(f"[Telegram Bot] Personal alert delivered to {user_profile.get('firstName')} (Chat {chat_id})!")
-            return data
-    except urllib.error.HTTPError as e:
-        err_content = e.read().decode("utf-8")
-        print(f"[Telegram Bot HTTP Error {e.code}]: {err_content}")
-        return {"ok": False, "error": err_content}
-    except Exception as e:
-        print(f"[Telegram Bot Error]: {e}")
-        return {"ok": False, "error": str(e)}
+    if type(chat_id) is not int or chat_id <= 0:
+        return {"ok": False, "error": "A private chat ID is required"}
+    return send_api_request("sendMessage", {"chat_id": chat_id, "text": format_personal_alert(deal, user_profile)})
 
 
-# Sample high-scoring test deal (Bogotá)
 SAMPLE_BOGOTA_DEAL = {
-    "title": "Chapinero Alto Vintage Penthouse Studio // Direct 4-Month Sublease",
-    "cityName": "Bogotá",
-    "neighborhood": "Chapinero Alto",
-    "priceLocal": 850000,
-    "priceUsd": 210,
-    "currencySymbol": "COP $",
-    "originalMarketPriceUsd": 450,
-    "savingsPercentage": 53,
-    "dealScore": 96,
-    "source": "Reddit Sublet (r/bogota)",
-    "sourceUrl": "https://reddit.com/r/bogota",
-    "nemotronAudit": {
-        "scamRiskScore": 0,
-        "gentrificationIndex": "Anti-Gentrification Champion",
-        "verifiedPerks": [
-            "No broker fee or cosigner required",
-            "Utilities included (300Mbps WiFi, water, power)",
-            "Complies with Colombian Law 820 of 2003 (no illegal deposits)"
-        ]
-    }
+    "demo": True, "cityId": "bogota", "cityName": "Bogotá", "type": "studio",
+    "title": "Sample Chapinero studio sublease", "priceLocal": 850000, "priceUsd": 210,
+    "currency": "COP", "dealScore": 96, "sourceUrl": "https://example.com/sample-bogota-sublease",
+    "audit": {"summary": "Sample audit for a direct sublease. Verify the source before paying.", "modelUsed": "sample"},
 }
 
 
 def main():
-    print("=" * 60)
-    print("RentScanner AI // Telegram Alert Bot Runner (TASK-06)")
-    print("=" * 60)
-
-    info = get_bot_info()
-    if not info.get("ok"):
-        print(f"[ERROR] Could not connect to Telegram: {info.get('error')}")
-        sys.exit(1)
-
-    bot_user = info["result"]["username"]
-    print(f"[CONNECTED] Telegram Bot: @{bot_user} ({info['result']['first_name']})")
-
-    target_chat = sys.argv[1] if len(sys.argv) > 1 else None
-
-    if not target_chat:
-        print("\nChecking for incoming messages to detect chat_id...")
-        detected_id = get_latest_chat_id()
-        if detected_id:
-            print(f"[FOUND] Detected active chat_id: {detected_id}")
-            target_chat = detected_id
-        else:
-            print("\n[NOTE] No target chat_id provided.")
-            print("To send a live test alert:")
-            print(f"1. Open https://t.me/{bot_user} and send a message (e.g. 'Hello').")
-            print("2. Run: python backend/bot.py <YOUR_CHAT_ID>")
-            print("Or pass your channel handle: python backend/bot.py @my_channel")
-            sys.exit(0)
-
-    print(f"\nDispatching sample 96/100 Deal Score alert to {target_chat}...")
-    res = send_telegram_alert(SAMPLE_BOGOTA_DEAL, target_chat)
-    if res.get("ok"):
-        print("✅ Alert delivered with 100% success!")
-    else:
-        print(f"❌ Failed to deliver: {res.get('error')}")
+    parser = argparse.ArgumentParser(description="Preview a sample Telegram alert")
+    parser.add_argument("chat", nargs="?", help="Explicit destination for --send")
+    parser.add_argument("--send", action="store_true", help="Send the labelled sample to that destination")
+    args = parser.parse_args()
+    if not args.send:
+        print(format_deal_alert(SAMPLE_BOGOTA_DEAL))
+        return
+    if not args.chat:
+        parser.error("--send requires an explicit destination")
+    result = send_telegram_alert(SAMPLE_BOGOTA_DEAL, args.chat)
+    if result.get("ok") is not True:
+        raise SystemExit(result.get("error", "Delivery failed"))
+    print("Sample sent.")
 
 
 if __name__ == "__main__":

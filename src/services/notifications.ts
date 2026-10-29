@@ -4,12 +4,13 @@ import type { AlertPreferences, Listing } from '../types';
 import { formatCurrency } from '../utils/formatters';
 
 export const TELEGRAM_BOT_URL = 'https://t.me/Rent_Scanner_AI_BOT?start=web';
+export const MIN_ALERT_SCORE = 95;
 const STORAGE_KEY = 'rentscanner_alert_preferences';
 
 const preferencesSchema = z.object({
   cityId: z.string().refine((id) => CITIES.some((city) => city.id === id)),
   maxPriceLocal: z.number().finite().nonnegative().nullable(),
-  minDealScore: z.number().int().min(90).max(100),
+  minDealScore: z.number().int().min(MIN_ALERT_SCORE).max(100),
   channel: z.enum(['telegram', 'whatsapp']),
 });
 
@@ -18,7 +19,7 @@ export function getAlertPreferences(defaultCityId: string): AlertPreferences {
   const defaults: AlertPreferences = {
     cityId: CITIES.some((city) => city.id === defaultCityId) ? defaultCityId : 'bogota',
     maxPriceLocal: null,
-    minDealScore: 95,
+    minDealScore: MIN_ALERT_SCORE,
     channel: 'telegram',
   };
   try {
@@ -49,7 +50,8 @@ export function findAlertPreview(listings: readonly Listing[], preferences: Aler
   return listings
     .filter((listing) =>
       listing.cityId === preferences.cityId &&
-      Number.isFinite(listing.dealScore) && listing.dealScore >= preferences.minDealScore &&
+      Number.isFinite(listing.dealScore) && listing.dealScore <= 100 &&
+      listing.dealScore >= Math.max(MIN_ALERT_SCORE, preferences.minDealScore) &&
       Number.isFinite(listing.priceLocal) && listing.priceLocal >= 0 &&
       (preferences.maxPriceLocal === null || listing.priceLocal <= preferences.maxPriceLocal)
     )
@@ -66,6 +68,7 @@ export function formatDealAlert(listing: Listing, channel: AlertPreferences['cha
     listing.title,
     `${formatCurrency(listing.priceLocal, listing.currency, listing.currencySymbol)} per month`,
     `Sample deal score: ${listing.dealScore}/100`,
+    `Sample audit summary: ${listing.nemotronAudit.leaseClauseSummary || 'Not supplied'}`,
     '',
     `Sample source: ${listing.sourceUrl}`,
   ].join('\n');
