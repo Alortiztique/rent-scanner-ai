@@ -91,7 +91,11 @@ export type GrossPayState =
 
 const DECIMAL_NUMBER = /^(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
 
-/** Parses entered pay text. Accepts only plain decimal notation, finite and above zero. */
+/**
+ * Parses entered pay text: a decimal such as 12.5 or .5, with an optional exponent such as 1e2
+ * (a number input reports that form too). Anything else is rejected, and so is a result that is
+ * not finite or not above zero.
+ */
 export function parseGrossPayInput(text: string): number | null {
   if (typeof text !== 'string') return null;
   const trimmed = text.trim();
@@ -168,23 +172,30 @@ export function calculateListingFairRent(
 /** AGI and hours are shown to one decimal. The values behind them are never rounded. */
 export const DISPLAY_DECIMALS = 1;
 
-// signDisplay "negative" drops the sign of a value that rounds to zero, so -0.04 reads 0.0.
+// Formats magnitudes only. The sign is added by formatOneDecimal, because the Intl signDisplay
+// value "negative" (the one that drops the sign of a value that rounds to zero) is missing from
+// Firefox before 116, which the build still targets.
 const ONE_DECIMAL = new Intl.NumberFormat('en-US', {
   minimumFractionDigits: DISPLAY_DECIMALS,
   maximumFractionDigits: DISPLAY_DECIMALS,
-  signDisplay: 'negative',
 });
-
-/** Formats a value to one decimal, or returns n/a for a value that is not a finite number. */
-export function formatOneDecimal(value: number): string {
-  return isFiniteNumber(value) ? ONE_DECIMAL.format(value) : 'n/a';
-}
+const ZERO_TEXT = ONE_DECIMAL.format(0);
 
 /**
  * The direction of a value as displayed: 1, -1, or 0 when it shows as 0.0. A difference that
  * rounds to 0.0 is therefore never described as a gain or a loss.
  */
 export function displayedSign(value: number): 1 | 0 | -1 {
-  if (!isFiniteNumber(value) || formatOneDecimal(Math.abs(value)) === formatOneDecimal(0)) return 0;
+  if (!isFiniteNumber(value) || ONE_DECIMAL.format(Math.abs(value)) === ZERO_TEXT) return 0;
   return value > 0 ? 1 : -1;
+}
+
+/**
+ * Formats a value to one decimal, or returns n/a for a value that is not a finite number. A value
+ * that rounds to 0.0 has no sign, so -0 and -0.04 read 0.0 and never -0.0.
+ */
+export function formatOneDecimal(value: number): string {
+  if (!isFiniteNumber(value)) return 'n/a';
+  const magnitude = ONE_DECIMAL.format(Math.abs(value));
+  return displayedSign(value) === -1 ? `-${magnitude}` : magnitude;
 }

@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { CITIES } from '../data/cities';
 import type { City, Listing } from '../types';
 import { formatSourceHost } from '../services/tavilySearch';
 import { calculateListingFairRent, displayedSign, formatOneDecimal } from '../utils/fairRentCalculator';
 import type { GrossPayState, ListingFairRent } from '../utils/fairRentCalculator';
+import { formatUsd } from '../utils/formatters';
 import { Clock, ExternalLink } from 'lucide-react';
 
 const PAY_INPUT_ID = 'gross-hourly-pay';
@@ -22,17 +23,20 @@ interface FairRentMetricsProps {
 }
 
 /** Amounts here use one en-US format so a thousands separator never reads as a decimal point. */
-function formatLocal(amount: number, listing: Listing, minFractionDigits: number, maxFractionDigits: number): string {
-  const digits = amount.toLocaleString('en-US', {
-    minimumFractionDigits: minFractionDigits,
-    maximumFractionDigits: maxFractionDigits,
-  });
+const formatDigits = (amount: number, minFractionDigits: number, maxFractionDigits: number) =>
+  amount.toLocaleString('en-US', { minimumFractionDigits: minFractionDigits, maximumFractionDigits: maxFractionDigits });
+
+const formatRent = (amount: number, listing: Listing) => `${listing.currencySymbol}${formatDigits(amount, 0, 0)}`;
+
+/**
+ * Pay is shown to cents (whole units for JPY). A positive rate that rounds to zero there would
+ * read as no pay while the hours still use it, so it keeps three significant digits instead.
+ */
+function formatPay(amount: number, listing: Listing): string {
+  const rounded = formatDigits(amount, listing.currency === 'JPY' ? 0 : 2, 2);
+  const digits = /[1-9]/.test(rounded) ? rounded : String(Number(amount.toPrecision(3)));
   return `${listing.currencySymbol}${digits}`;
 }
-
-const formatRent = (amount: number, listing: Listing) => formatLocal(amount, listing, 0, 0);
-const formatPay = (amount: number, listing: Listing) =>
-  formatLocal(amount, listing, listing.currency === 'JPY' ? 0 : 2, 2);
 
 /**
  * Illustrative AGI and gross-pay hours for one demo fixture, from the one shared calculator. The
@@ -48,12 +52,14 @@ export const FairRentMetrics: React.FC<FairRentMetricsProps> = ({
   const city = CITIES.find((c) => c.id === listing.cityId);
   const result = calculateListingFairRent(listing, city?.grossPay, payOverride);
   const isDossier = variant === 'dossier';
+  const payAction = needsPay(result.pay) ? 'Enter hourly pay' : 'Set or edit hourly pay';
 
+  // wrap-anywhere lets a very large finite value (a tiny pay makes huge hours) break inside the card.
   return (
     <section
-      aria-label="Illustrative wage parity, demo data"
+      aria-label={`Illustrative wage parity, demo data: ${listing.title}`}
       data-fair-rent={variant}
-      className={isDossier ? 'space-y-3 font-mono' : 'mt-3 p-2 bg-zinc-900/60 border border-zinc-800 font-mono'}
+      className={`wrap-anywhere ${isDossier ? 'space-y-3 font-mono' : 'mt-3 p-2 bg-zinc-900/60 border border-zinc-800 font-mono'}`}
     >
       {isDossier && (
         <h4 className="text-xs font-bold text-zinc-300 uppercase flex items-center gap-1.5">
@@ -101,10 +107,10 @@ export const FairRentMetrics: React.FC<FairRentMetricsProps> = ({
             <button
               type="button"
               onClick={onEditPay}
-              aria-label={`${needsPay(result.pay) ? 'Enter' : 'Set or edit'} gross hourly pay for ${listing.cityName} in the listing details`}
+              aria-label={`${payAction} for ${listing.cityName} in the listing details`}
               className="mt-2 w-full py-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-zinc-700 text-[11px] font-bold uppercase transition cursor-pointer"
             >
-              {needsPay(result.pay) ? 'ENTER HOURLY PAY' : 'SET OR EDIT HOURLY PAY'}
+              {payAction.toUpperCase()}
             </button>
           )}
         </>
@@ -178,11 +184,15 @@ function describeUnavailableHours(result: ListingFairRent, city: City | undefine
     case 'required':
       return city && !hasDefault ? city.grossPay.basis : 'Enter a gross hourly pay in the listing details.';
     case 'cleared':
-      return `The gross hourly pay field is empty, so the default is not used. Enter a rate${hasDefault ? ' or restore the default' : ''} in the listing details.`;
+      // A number input reports unfinished text such as "1e" as empty, so this covers both.
+      return `The gross hourly pay is empty or incomplete, so the default is not used. Enter a complete rate${hasDefault ? ' or restore the default' : ''} in the listing details.`;
     case 'invalid':
       return 'The gross hourly pay entered is not a number above 0. Fix it in the listing details.';
     default:
-      return 'The demo reference rent is not available for this fixture.';
+      // The pay is usable here, so the hours are missing because of the rents or an overflow.
+      if (result.referenceRentLocal === null) return 'The demo reference rent is not available for this fixture.';
+      if (result.agi === null) return 'The asking rent and demo reference rent do not give a usable result for this fixture.';
+      return 'The hours are too large to calculate at this gross hourly pay. Enter a larger rate in the listing details.';
   }
 }
 
@@ -204,16 +214,25 @@ interface GrossPayControlProps {
 }
 
 const GrossPayControl: React.FC<GrossPayControlProps> = ({ listing, city, payOverride, pay, onChange }) => {
+  const inputRef = useRef<HTMLInputElement>(null);
   const defaultHourly = city?.grossPay.defaultHourly ?? null;
-  // The field starts at the default (to two decimals) so clearing it is a visible, deliberate act.
-  const value = payOverride ?? (defaultHourly === null ? '' : String(Number(defaultHourly.toFixed(2))));
+  // The field starts at the exact default the hours use (Bogota's is not a round number), so
+  // clearing it is a visible, deliberate act and re-entering the shown text changes nothing.
+  const value = payOverride ?? (defaultHourly === null ? '' : String(defaultHourly));
   const unusable = pay.status === 'invalid' || pay.status === 'cleared';
   const canRestore = payOverride !== undefined && defaultHourly !== null;
+
+  // The restore button unmounts once the default applies, so focus moves to the field first.
+  const restoreDefault = () => {
+    onChange(listing.cityId, null);
+    inputRef.current?.focus();
+  };
 
   let status = '';
   if (pay.status === 'invalid') status = 'Enter a number above 0, for example 12.50.';
   else if (pay.status === 'cleared') {
-    status = `The field is empty, so hours stay unavailable until you enter a rate${canRestore ? ' or restore the default' : ''}.`;
+    // A number input reports unfinished text such as "1e" as empty, so this covers both.
+    status = `The field is empty or incomplete, so hours stay unavailable until you enter a complete rate${canRestore ? ' or restore the default' : ''}.`;
   } else if (pay.status === 'required') {
     status = 'Required: enter a rate to see gross-pay hours.';
   }
@@ -225,6 +244,7 @@ const GrossPayControl: React.FC<GrossPayControlProps> = ({ listing, city, payOve
       </label>
       <div className="flex flex-wrap items-center gap-2">
         <input
+          ref={inputRef}
           id={PAY_INPUT_ID}
           type="number"
           inputMode="decimal"
@@ -245,7 +265,7 @@ const GrossPayControl: React.FC<GrossPayControlProps> = ({ listing, city, payOve
         {canRestore && (
           <button
             type="button"
-            onClick={() => onChange(listing.cityId, null)}
+            onClick={restoreDefault}
             className="px-2 py-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-zinc-700 text-[11px] font-bold uppercase transition cursor-pointer"
           >
             RESTORE DEFAULT
@@ -285,7 +305,7 @@ const MethodNotes: React.FC<{ listing: Listing; city: City | undefined; result: 
         {listing.currency !== 'USD' && result.referenceRentLocal !== null && (
           <>
             {' '}
-            It is converted from {formatUsdAmount(listing.originalMarketPriceUsd)} USD with this fixture&apos;s own
+            It is converted from {formatUsd(listing.originalMarketPriceUsd)} USD with this fixture&apos;s own
             local/USD price ratio. That is not a live exchange rate.
           </>
         )}
@@ -322,5 +342,3 @@ const MethodNotes: React.FC<{ listing: Listing; city: City | undefined; result: 
     </div>
   );
 };
-
-const formatUsdAmount = (amount: number) => `$${amount.toLocaleString('en-US')}`;

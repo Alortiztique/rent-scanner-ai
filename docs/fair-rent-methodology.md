@@ -74,6 +74,15 @@ Worked example, fixture `nyc-sublet-01` (asking $1,250, reference $2,800, pay $1
 - Gross hourly pay must be finite and above 0.
 - A result that is not a finite number (for example an overflow) is treated as unavailable.
   `NaN` and `Infinity` are never shown.
+- When hours are unavailable the interface names the real cause. A missing pay says the pay is
+  required, empty or not a number above 0. A missing reference says the demo reference rent is not
+  available. An asking rent or reference that gives no usable result says so. A valid rent and
+  reference whose hours overflow because the pay is very small (for example `1e-320`) say the
+  hours are too large to calculate at that pay and ask for a larger rate. AGI does not depend on
+  pay, so it stays visible in that last case.
+- A very large but finite value is shown in full, not hidden. The metrics area breaks an unbroken
+  run of digits so it wraps inside the card and the dossier instead of widening the page. No
+  maximum pay or hours is enforced.
 
 ## Gross hourly pay defaults
 
@@ -110,7 +119,9 @@ COP 1,750,905 per month / (42 hours * 52 weeks / 12 months) = 1,750,905 / 182 = 
   [Decree 159 of 2026](https://dapre.presidencia.gov.co/normativa/normativa/DECRETO%20No.%200159%20DEL%2019%20DE%20FEBRERO%20DE%202026.pdf).
 - The 42-hour week phase is in
   [Function Publica](https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=166506).
-  The week reached 42 hours on 2026-07-15, which is the date shown for this default.
+  The week reached 42 hours on 2026-07-15. That is the date shown for this default because it is
+  when the 42-hour week, and so the 182-hour divisor, applies. It is the date of the derived
+  hourly basis, not the date the monthly amount first took effect.
 - The divisor of 182 working hours a month is an **analytical assumption**: an annual average of
   a 42-hour week. It is not an enacted hourly minimum and not a payroll or overtime divisor. The
   interface calls the result a "derived gross hourly equivalent" and shows the monthly amount and
@@ -125,15 +136,29 @@ worker", so none of them is used as a universal rate.
 ## The pay control and its state
 
 - The fixture dossier has a labelled number field, "Gross hourly pay", with the currency and the
-  unit (per hour, before tax) in the label. It starts at the city default. Each listing card has
-  a button that opens the dossier to set or edit it.
+  unit (per hour, before tax) in the label. It starts at the exact default the hours use. For
+  Bogotá that is `9620.357142857143`, not a two-decimal copy, so typing the shown text back gives
+  the same hours. Each listing card has a button that opens the dossier to set or edit it. Its
+  accessible name starts with the visible words ("Enter hourly pay" or "Set or edit hourly pay")
+  and adds the city.
+- The pay line shows the rate to cents (whole units for JPY). A positive rate that cents would
+  show as zero keeps three significant digits instead, for example `$0.001` or `$1e-7`, so an
+  accepted pay is never described as `0.00`.
+- The metrics area on each card and in the dossier is a region named after its listing, so a
+  list of landmarks tells the eleven cards apart.
 - Pay is kept **per city**, in memory in `App`. Changing it for one city updates that city's
   cards and its open dossier together and never touches another city. It is not saved: a page
   reload returns every city to its default. Closing and reopening a dossier keeps it.
 - A custom value is labelled **entered by you**. It is never described as a statutory wage.
 - Emptying the field, or entering something that is not a number above 0, leaves the hours
   unavailable and says what to fix. It does **not** quietly bring the default back. "Restore
-  default" removes the override on purpose. Dubai has no default to restore.
+  default" removes the override on purpose, and keyboard focus moves to the pay field when it
+  does, because the button disappears. Dubai has no default to restore.
+- The field is a native number input. While someone types unfinished text such as `1e` or `-`,
+  the browser reports an empty value but keeps the text on screen. The app treats that as an
+  empty override and does not touch the text. The message therefore says the field is "empty or
+  incomplete", which is true in both cases. Text such as `-5` or `0` is a complete number and is
+  reported as not above 0. Exponent notation such as `1e2` is accepted.
 - A card or dossier rendered without the pay props, for example by an older caller, uses the city
   default. A dossier without a change handler shows the numbers but no field.
 
@@ -156,9 +181,14 @@ node --experimental-strip-types --test tests/fair-rent-calculator.test.ts
 The test is offline. It covers the arithmetic, the validation rules, the wage snapshot and all
 eleven fixtures in all eight cities. It also renders the real card, dossier and `App` to static
 markup and checks the text, labels and attributes shown for default, custom, cleared, invalid,
-negative and parity states.
+negative and parity states. It loads a second copy of the calculator while `Intl.NumberFormat`
+rejects `signDisplay: "negative"`, as Firefox 114 and 115 do, to show the module still loads and
+formats. Vite's default build target includes Firefox 114, so the code avoids that option.
 
-Static markup does not click, type, focus or press Escape. The tests call the card and pay control
-as functions to check that their callbacks fire with the right city and text, but they do not run
-a browser, so `App`'s state updates and the dialog's focus and Escape behavior are not exercised
-by this suite. The test does not establish that any rate is current in law.
+Static markup does not click, type, focus, press Escape or lay anything out. The tests render the
+pay control inside a server render and invoke the handlers it passes down, to check that they
+report the right city and text and that restoring the default asks the field for focus. They do
+not run a browser, so `App`'s state updates, whether focus really lands, how a number input
+reports unfinished text, the wrapping of very large values and the dialog's focus and Escape
+behavior are not exercised by this suite and need a real browser. The test does not establish
+that any rate is current in law.

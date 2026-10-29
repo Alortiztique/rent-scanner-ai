@@ -7,9 +7,12 @@
 // These checks cover arithmetic, validation, the wage snapshot, and the fixture conversion.
 // They also render the real ListingCard, ListingModal, and App with react-dom/server, which gives
 // static markup only. Markup checks show what is displayed for a given state. They do not click,
-// type, focus, or press Escape. The handler wiring checks call the hook-free components as
-// functions and invoke the props they pass down, which checks the callback contract but still
-// runs no browser. App's own state updates and the dialog focus behavior are not exercised here.
+// type, focus, or press Escape, and they cannot check layout. The handler wiring checks render
+// the pay control inside a server render (it uses a ref hook), then invoke the props it passes
+// down. That checks the callback contract and that restoring the default asks the field for
+// focus, but it runs no browser: whether focus really lands, how a number input reports
+// unfinished text, and whether very large values wrap were checked by hand in a real browser, not here.
+// App's own state updates and the dialog focus behavior are not exercised here either.
 // None of this establishes that any demo reference rent or minimum wage is current in law.
 // Run: node --experimental-strip-types --test tests/fair-rent-calculator.test.ts
 import { after, before, mock, test } from 'node:test';
@@ -220,24 +223,62 @@ test('a value that rounds to 0.0 reads as parity and never as -0.0', () => {
   assert.equal(formatOneDecimal(-0.04), '0.0');
   assert.equal(formatOneDecimal(0.04), '0.0');
   assert.equal(formatOneDecimal(-0), '0.0');
+  assert.equal(formatOneDecimal(-0.049999), '0.0');
   assert.equal(displayedSign(-0.04), 0);
   assert.equal(displayedSign(0.04), 0);
   assert.equal(displayedSign(0.06), 1);
   assert.equal(displayedSign(-0.06), -1);
   assert.equal(formatOneDecimal(-0.06), '-0.1');
+  assert.equal(formatOneDecimal(-0.05), '-0.1', 'half rounds away from zero, so it is not parity');
   assert.equal(formatOneDecimal(1234.56), '1,234.6');
+  assert.equal(formatOneDecimal(-1234.56), '-1,234.6');
   assert.equal(displayedSign(Number.NaN), 0);
+});
+
+test('the calculator loads and formats where Intl rejects signDisplay "negative" (Firefox 114 and 115)', async () => {
+  // The build targets Firefox 114, which throws a RangeError for that signDisplay value (added in 116).
+  // A module-scope formatter using it would stop the whole app from loading, so import a fresh copy
+  // of the module (the query string makes it a new instance) while the constructor rejects it.
+  const NativeNumberFormat = Intl.NumberFormat;
+  class OldNumberFormat extends NativeNumberFormat {
+    constructor(locales?: string | string[], options?: Intl.NumberFormatOptions) {
+      if (options?.signDisplay === 'negative') {
+        throw new RangeError('Value negative out of range for Intl.NumberFormat options property signDisplay');
+      }
+      super(locales, options);
+    }
+  }
+  Intl.NumberFormat = OldNumberFormat as typeof Intl.NumberFormat;
+  try {
+    const fresh = (await import('../src/utils/fairRentCalculator.ts?old-intl')) as typeof import('../src/utils/fairRentCalculator.ts');
+    assert.notEqual(fresh.formatOneDecimal, formatOneDecimal, 'a separate module instance was loaded');
+    assert.equal(fresh.formatOneDecimal(-25), '-25.0');
+    assert.equal(fresh.formatOneDecimal(-0.04), '0.0');
+    assert.equal(fresh.formatOneDecimal(-0), '0.0');
+    assert.equal(fresh.formatOneDecimal(0.04), '0.0');
+    assert.equal(fresh.formatOneDecimal(-0.06), '-0.1');
+    assert.equal(fresh.formatOneDecimal(-1234.56), '-1,234.6');
+    assert.equal(fresh.displayedSign(-0.04), 0);
+    assert.equal(fresh.displayedSign(-0.06), -1);
+  } finally {
+    Intl.NumberFormat = NativeNumberFormat;
+  }
 });
 
 // ---------------------------------------------------------------------------------------------
 // Pay text and per-city overrides
 
-test('parseGrossPayInput accepts plain positive decimals only', () => {
+test('parseGrossPayInput accepts positive decimals, with or without an exponent, and nothing else', () => {
   assert.equal(parseGrossPayInput('17'), 17);
   assert.equal(parseGrossPayInput(' 12.71 '), 12.71);
   assert.equal(parseGrossPayInput('.5'), 0.5);
+  assert.equal(parseGrossPayInput('7.'), 7);
+  // A number input reports exponent notation as typed, so it is accepted on purpose.
   assert.equal(parseGrossPayInput('1e2'), 100);
-  for (const text of ['', '   ', 'abc', '-1', '0', '0.0', '1,5', '0x10', 'Infinity', 'NaN', '1e999', '12abc', '+5', '1 2']) {
+  assert.equal(parseGrossPayInput('1E2'), 100);
+  assert.equal(parseGrossPayInput('2.5e-3'), 0.0025);
+  assert.equal(parseGrossPayInput('1e-320'), 1e-320, 'a tiny positive denormal is still a positive finite pay');
+  for (const text of ['', '   ', 'abc', '-1', '0', '0.0', '0e5', '1,5', '0x10', 'Infinity', 'NaN', '1e999', '1e', '12abc', '+5', '1 2']) {
     assert.equal(parseGrossPayInput(text), null, JSON.stringify(text));
   }
   assert.equal(parseGrossPayInput(17 as unknown as string), null);
@@ -611,8 +652,8 @@ test('custom pay is labelled as entered by the user and never as a statutory wag
 
 test('clearing or breaking the pay hides only the hours and does not bring the default back', () => {
   const cases: [string, RegExp][] = [
-    ['', /The gross hourly pay field is empty, so the default is not used/],
-    ['   ', /The gross hourly pay field is empty/],
+    ['', /The gross hourly pay is empty or incomplete, so the default is not used/],
+    ['   ', /The gross hourly pay is empty or incomplete/],
     ['abc', /not a number above 0/],
     ['0', /not a number above 0/],
     ['-5', /not a number above 0/],
@@ -640,7 +681,7 @@ test('Dubai has no default: hours are unavailable with a reason until AED pay is
   assert.match(shown, /Illustrative AGI 53\.0/);
   assert.match(shown, /Gross-pay hours unavailable\. No default\. There is no universal statutory minimum wage for every Dubai worker/);
   assert.doesNotMatch(shown, /city default/);
-  assert.match(renderCard(dubai), /aria-label="Enter gross hourly pay for Dubai in the listing details"/);
+  assert.match(renderCard(dubai), /aria-label="Enter hourly pay for Dubai in the listing details"/);
   assert.match(renderCard(dubai), />ENTER HOURLY PAY</);
 
   const entered = textOf(metricsBlock(renderCard(dubai, '50'), 'card'));
@@ -766,10 +807,189 @@ test('an emptied or invalid field is flagged for assistive technology and offers
   }
 });
 
+test('an empty field and unfinished text share one truthful message, since a number input reports both as empty', () => {
+  // Typing "1e" or "-" into a number input leaves value "" (validity.badInput), which the override
+  // records as an empty string. The wording therefore has to be true for either case.
+  const markup = renderDossier(nyc(), '');
+  const status = markup.match(/<p id="gross-hourly-pay-status"[^>]*>([^<]*)<\/p>/)?.[1] ?? '';
+  assert.match(status, /The field is empty or incomplete, so hours stay unavailable until you enter a complete rate or restore the default\./);
+  assert.doesNotMatch(status, /^The field is empty,/);
+  assert.match(textOf(metricsBlock(markup, 'dossier')), /The gross hourly pay is empty or incomplete, so the default is not used\. Enter a complete rate or restore the default/);
+  // No default to restore (Dubai): the message offers only entering a rate.
+  const dubai = renderDossier(listingById('dubai-sublet-01'), '');
+  assert.match(textOf(metricsBlock(dubai, 'dossier')), /empty or incomplete, so the default is not used\. Enter a complete rate in the listing details/);
+  assert.doesNotMatch(textOf(metricsBlock(dubai, 'dossier')), /restore the default/);
+  // The number control stays: no sentinel text goes into the value.
+  assert.match(markup.match(/<input[^>]*id="gross-hourly-pay"[^>]*>/)?.[0] ?? '', /type="number"[^>]*value=""/);
+});
+
+test('hours that are unavailable say why: an absent reference, unusable rents, or an overflow', () => {
+  const cases: [string, Listing, string | undefined, RegExp, RegExp][] = [
+    [
+      'reference rent absent',
+      { ...listingById('london-sublet-01'), priceUsd: 0 },
+      undefined,
+      /The demo reference rent is not available for this fixture\./,
+      /too large to calculate|do not give a usable result/,
+    ],
+    [
+      'unusable asking rent',
+      { ...nyc(), priceLocal: Number.NaN },
+      undefined,
+      /The asking rent and demo reference rent do not give a usable result for this fixture\./,
+      /reference rent is not available|too large to calculate/,
+    ],
+    [
+      'overflow with a valid rent and reference',
+      nyc(),
+      '1e-320',
+      /The hours are too large to calculate at this gross hourly pay\. Enter a larger rate in the listing details\./,
+      /reference rent is not available|do not give a usable result/,
+    ],
+    [
+      'overflow from a small but ordinary-looking pay',
+      { ...nyc(), priceLocal: Number.MAX_VALUE },
+      '0.00001',
+      /too large to calculate at this gross hourly pay/,
+      /reference rent is not available/,
+    ],
+  ];
+  for (const [name, listing, override, reason, notReason] of cases) {
+    for (const [markup, variant] of [
+      [renderCard(listing, override), 'card'],
+      [renderDossier(listing, override), 'dossier'],
+    ] as const) {
+      const shown = textOf(metricsBlock(markup, variant));
+      assert.match(shown, /Gross-pay hours unavailable\./, `${name} ${variant}`);
+      assert.match(shown, reason, `${name} ${variant}`);
+      assert.doesNotMatch(shown, notReason, `${name} ${variant} gives only its own reason`);
+    }
+  }
+  // The overflow case keeps the reference row and AGI, which do not depend on the pay.
+  const overflow = textOf(metricsBlock(renderCard(nyc(), '1e-320'), 'card'));
+  assert.match(overflow, /Illustrative AGI 55\.4/);
+  assert.match(overflow, /Demo reference rent \$2,800\/mo/);
+  assert.match(overflow, /At \$1e-320\/h gross, entered by you/);
+  assert.doesNotMatch(overflow, /NaN|Infinity/);
+});
+
+test('an accepted tiny pay is never described as zero', () => {
+  const shownPay = (listing: Listing, override: string | undefined) =>
+    textOf(metricsBlock(renderCard(listing, override), 'card')).match(/At (.+?)\/h gross/)?.[1];
+  const tokyo = listingById('tokyo-sublet-01');
+  const cases: [Listing, string, string][] = [
+    [nyc(), '0.005', '$0.01'],
+    [nyc(), '0.004', '$0.004'],
+    [nyc(), '0.001', '$0.001'],
+    [nyc(), '0.0001', '$0.0001'],
+    [nyc(), '0.00012345', '$0.000123'],
+    [nyc(), '1e-7', '$1e-7'],
+    [nyc(), '1e-320', '$1e-320'],
+    [tokyo, '0.4', '¥0.4'],
+    [tokyo, '0.001', '¥0.001'],
+    [tokyo, '1500', '¥1,500'],
+  ];
+  for (const [listing, override, expected] of cases) {
+    assert.equal(shownPay(listing, override), expected, `${listing.currency} pay ${override}`);
+    assert.ok(parseGrossPayInput(override) !== null && (parseGrossPayInput(override) as number) > 0);
+  }
+  // Ordinary rates are unchanged: cents, with grouping, and whole yen.
+  assert.equal(shownPay(nyc(), '25'), '$25.00');
+  assert.equal(shownPay(nyc(), '12.5'), '$12.50');
+  assert.equal(shownPay(nyc(), undefined), '$17.00');
+  assert.equal(shownPay(tokyo, undefined), '¥1,280');
+  assert.equal(shownPay(listingById('bogota-sublet-01'), undefined), 'COP $9,620.36');
+  // Whatever the currency, a positive entered rate is never printed as 0, 0.0 or 0.00.
+  for (const listing of MOCK_LISTINGS) {
+    for (const override of ['0.001', '1e-7']) {
+      const text = textOf(metricsBlock(renderDossier(listing, override), 'dossier'));
+      assert.doesNotMatch(text, /At \D*0(?:\.0+)?\/h gross/, `${listing.id} ${override}`);
+    }
+  }
+});
+
+test('the pay field starts at the exact default the hours use, so entering the shown text changes nothing', () => {
+  for (const listing of MOCK_LISTINGS) {
+    const { grossPay } = cityById(listing.cityId);
+    const field = renderDossier(listing).match(/<input[^>]*id="gross-hourly-pay"[^>]*>/)?.[0] ?? '';
+    const shown = field.match(/value="([^"]*)"/)?.[1];
+    if (grossPay.defaultHourly === null) {
+      assert.equal(shown, '', `${listing.id} has no default to show`);
+      continue;
+    }
+    assert.equal(Number(shown), grossPay.defaultHourly, `${listing.id} field text is the default`);
+    const typed = calculateListingFairRent(listing, grossPay, shown);
+    const byDefault = calculateListingFairRent(listing, grossPay);
+    assert.equal(typed.pay.status, 'custom');
+    assert.deepEqual(typed.hours, byDefault.hours, `${listing.id} re-entering the field text gives the same hours`);
+  }
+  // Bogota's derived 1,750,905 / 182 is not a round number. The field must not be a 2-decimal copy of it.
+  const bogota = renderDossier(listingById('bogota-sublet-01')).match(/<input[^>]*id="gross-hourly-pay"[^>]*>/)?.[0] ?? '';
+  assert.match(bogota, /value="9620\.357142857143"/);
+});
+
+test('very large finite hours are shown in full, never dropped, and the region is set to wrap them', () => {
+  const sf = listingById('sf-sublet-01');
+  for (const override of ['1e-300', '1e-100']) {
+    const result = calculateListingFairRent(sf, cityById('sf').grossPay, override);
+    assert.ok(result.hours, `finite hours for ${override}`);
+    for (const [markup, variant] of [
+      [renderCard(sf, override), 'card'],
+      [renderDossier(sf, override), 'dossier'],
+    ] as const) {
+      const block = metricsBlock(markup, variant);
+      const shown = shownMetrics(markup, variant);
+      assert.equal(shown.asking, formatOneDecimal(result.hours.asking), `${variant} ${override} asking hours`);
+      assert.equal(shown.reference, formatOneDecimal(result.hours.reference), `${variant} ${override} reference hours`);
+      assert.ok((shown.asking as string).replace(/\D/g, '').length > 100, 'the full digits are kept');
+      assert.doesNotMatch(textOf(block), /Gross-pay hours unavailable/, `${variant} ${override}`);
+      // Layout cannot be measured here. Real-browser wrapping was checked separately.
+      assert.match(block, /^<section[^>]*class="wrap-anywhere /, `${variant} region can wrap an unbroken number`);
+    }
+  }
+});
+
+test('the dossier prints no dollar savings line beside the demo reference rent', () => {
+  // The old "Save ~$X/mo" line subtracted the asking price from the reference and read as a real
+  // saving. The shared metrics now carry that comparison, with its demo label and direction.
+  for (const listing of [nyc(), nycAsking(3500), nycAsking(2800), listingById('london-sublet-01'), listingById('bogota-sublet-02')]) {
+    const text = textOf(renderDossier(listing));
+    assert.doesNotMatch(text, /Save ~|\$-\d/, listing.id);
+    assert.match(text, /Demo reference rent/, listing.id);
+  }
+  assert.match(textOf(metricsBlock(renderDossier(nycAsking(3500)), 'dossier')), /41\.2 extra hours/);
+});
+
 test('the card has a labelled route to the pay field in the details', () => {
   const markup = renderCard(nyc());
-  assert.match(markup, /<button[^>]*aria-label="Set or edit gross hourly pay for New York City in the listing details"[^>]*>SET OR EDIT HOURLY PAY<\/button>/);
-  assert.match(renderCard(nyc(), ''), /aria-label="Enter gross hourly pay for New York City in the listing details"/);
+  assert.match(markup, /<button[^>]*aria-label="Set or edit hourly pay for New York City in the listing details"[^>]*>SET OR EDIT HOURLY PAY<\/button>/);
+  assert.match(renderCard(nyc(), ''), /aria-label="Enter hourly pay for New York City in the listing details"/);
+});
+
+test('the card route button name contains its visible text and the city (WCAG 2.5.3 label in name)', () => {
+  for (const listing of MOCK_LISTINGS) {
+    for (const override of [undefined, '', '25']) {
+      const markup = renderCard(listing, override);
+      const match = markup.match(/<button[^>]*aria-label="([^"]*)"[^>]*>([^<]*)<\/button>/);
+      assert.ok(match, `${listing.id} has a labelled route button`);
+      const [, name, visible] = match;
+      assert.match(visible, /^(ENTER|SET OR EDIT) HOURLY PAY$/, `${listing.id} visible text`);
+      assert.ok(name.toLowerCase().includes(visible.toLowerCase()), `"${name}" contains "${visible}"`);
+      assert.ok(name.includes(listing.cityName), `"${name}" names the city`);
+    }
+  }
+});
+
+test('every metrics region has its own name, so the landmark list tells the listings apart', () => {
+  const markup = renderToStaticMarkup(createElement(app.App));
+  const names = [...markup.matchAll(/<section[^>]*aria-label="([^"]*)"[^>]*data-fair-rent="card"/g)].map((m) => m[1]);
+  assert.equal(names.length, 11);
+  assert.equal(new Set(names).size, 11, 'no two card regions share a name');
+  for (const listing of MOCK_LISTINGS) {
+    assert.ok(names.some((name) => name.includes(escapeHtml(listing.title))), `${listing.id} is named by its title`);
+  }
+  // The dossier region is named for its listing too.
+  assert.match(renderDossier(nyc()), new RegExp(`<section[^>]*aria-label="Illustrative wage parity, demo data: ${escapeHtml(nyc().title)}"`));
 });
 
 test('a pay override for one city changes that city only, on every card', () => {
@@ -819,9 +1039,9 @@ test('the card route button opens the dossier for its own listing (callback wiri
   assert.deepEqual(selected.map((l) => l.id), ['nyc-sublet-01']);
 });
 
-test('typing in the dossier field and restoring the default report the city and text (callback wiring)', () => {
-  const calls: [string, string | null][] = [];
-  const onPayOverrideChange = (cityId: string, value: string | null) => calls.push([cityId, value]);
+test('typing in the dossier field and restoring the default report the city and text, and restore asks the field for focus (callback wiring)', () => {
+  const events: string[] = [];
+  const onPayOverrideChange = (cityId: string, value: string | null) => events.push(`change ${cityId} ${JSON.stringify(value)}`);
   const section = metricsModule.FairRentMetrics({
     listing: nyc(),
     variant: 'dossier',
@@ -830,18 +1050,26 @@ test('typing in the dossier field and restoring the default report the city and 
   });
   const [control] = findElements(section, (el) => typeof el.type === 'function' && el.type.name === 'GrossPayControl');
   assert.ok(control, 'the dossier renders the pay control');
-  const rendered = (control.type as (props: unknown) => ReactNode)(control.props);
+  // The control holds a ref, so it can only run inside a render. A stand-in component calls it once.
+  let rendered: ReactNode = null;
+  const RenderControl = () => {
+    rendered = (control.type as (props: unknown) => ReactNode)(control.props);
+    return null;
+  };
+  renderToStaticMarkup(createElement(RenderControl));
   const [input] = findElements(rendered, (el) => el.type === 'input');
   const [restore] = findElements(rendered, (el) => el.type === 'button');
   assert.ok(input && restore);
+  // A server render never attaches the ref, so give it a stand-in element that records focus().
+  const field = input.props.ref as { current: { focus: () => void } | null };
+  assert.ok(field && 'current' in field, 'the input receives a ref object');
+  field.current = { focus: () => events.push('focus') };
+
   input.props.onChange({ target: { value: '31.5' } });
   input.props.onChange({ target: { value: '' } });
+  assert.deepEqual(events, ['change nyc "31.5"', 'change nyc ""'], 'typing never moves focus');
   restore.props.onClick();
-  assert.deepEqual(calls, [
-    ['nyc', '31.5'],
-    ['nyc', ''],
-    ['nyc', null],
-  ]);
+  assert.deepEqual(events.slice(2), ['change nyc null', 'focus'], 'restoring reports the city and then focuses the field');
 });
 
 // ---------------------------------------------------------------------------------------------

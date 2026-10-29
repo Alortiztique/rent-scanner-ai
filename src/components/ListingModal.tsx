@@ -328,9 +328,6 @@ const FixtureDossier: React.FC<FixtureDossierProps> = ({ listing, onClose, payOv
                       <div className="text-sm text-zinc-400 line-through">
                         {formatUsd(listing.originalMarketPriceUsd)}/mo
                       </div>
-                      <div className="text-xs text-emerald-400 font-bold mt-0.5">
-                        Save ~${(listing.originalMarketPriceUsd - listing.priceUsd).toLocaleString()}/mo
-                      </div>
                     </div>
                   </div>
                 </div>
