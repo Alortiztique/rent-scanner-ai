@@ -2,6 +2,7 @@ import React from 'react';
 import type { Listing, ScoutListing } from '../types';
 import { formatCurrency, formatUsd } from '../utils/formatters';
 import { formatSourceHost } from '../services/tavilySearch';
+import { FairRentMetrics } from './FairRentMetrics';
 import {
   ShieldCheck,
   ShieldAlert,
@@ -19,9 +20,11 @@ import {
 interface ListingCardProps {
   listing: Listing;
   onSelect: (listing: Listing) => void;
+  /** Gross hourly pay text the user entered for this listing's city. Without it the city default applies. */
+  payOverride?: string;
 }
 
-export const ListingCard: React.FC<ListingCardProps> = ({ listing, onSelect }) => {
+export const ListingCard: React.FC<ListingCardProps> = ({ listing, onSelect, payOverride }) => {
   const isExceptional = listing.dealScore >= 90;
 
   return (
@@ -114,12 +117,20 @@ export const ListingCard: React.FC<ListingCardProps> = ({ listing, onSelect }) =
             </div>
 
             <div className="text-right">
-              <div className="text-[10px] text-zinc-500 uppercase">Local Median</div>
+              <div className="text-[10px] text-zinc-500 uppercase">Demo reference rent</div>
               <div className="text-xs text-zinc-400 line-through">
                 {formatUsd(listing.originalMarketPriceUsd)}/mo
               </div>
             </div>
           </div>
+
+          {/* Illustrative AGI and gross-pay hours. The pay itself is edited in the dossier. */}
+          <FairRentMetrics
+            variant="card"
+            listing={listing}
+            payOverride={payOverride}
+            onEditPay={() => onSelect(listing)}
+          />
 
           {/* Spec details: Bed / Bath / SqM */}
           <div className="grid grid-cols-3 gap-1 py-2 my-2.5 bg-zinc-900/60 border border-zinc-900 text-center font-mono text-[11px] text-zinc-400">

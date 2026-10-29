@@ -1,3 +1,27 @@
+/**
+ * Default gross hourly pay for a city, stored with the basis that makes the number citable.
+ * Amounts are gross (before tax) in the city's own currency. A default is a statutory or derived
+ * floor for the stated coverage, not take-home pay and not an average wage.
+ */
+export interface CityGrossPay {
+  /** Gross pay per hour in the city's currency, or null when no universal default exists. */
+  defaultHourly: number | null;
+  /** Who the default covers and its caveats, or why no default is assumed. */
+  basis: string;
+  /** ISO date the rate or its stated basis took effect. Null when there is no default. */
+  effectiveDate: string | null;
+  sources: string[];
+  /** Set only when defaultHourly is derived from a monthly amount rather than enacted per hour. */
+  monthlyConversion?: {
+    monthlyAmount: number;
+    hoursPerMonth: number;
+    assumption: string;
+  };
+}
+
+/** In-memory gross-hourly-pay text the user entered, by city id. A missing key means the city default. */
+export type GrossPayOverrides = Partial<Record<string, string>>;
+
 export interface City {
   id: string;
   name: string;
@@ -8,6 +32,7 @@ export interface City {
   topAffordableNeighborhoods: string[];
   gentrificationRating: 'Severe' | 'High' | 'Moderate';
   activeDealsCount: number;
+  grossPay: CityGrossPay;
 }
 
 export type ListingType = 'sublease' | 'room' | 'entire_apartment' | 'studio' | 'loft';
