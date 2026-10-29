@@ -81,6 +81,137 @@
   box-shadow: 3px 3px 0px 0px #166534;
 }
 
+/*
+ * Radar Map. Leaflet's own stylesheet is loaded in main.tsx. Everything below is scoped to
+ * .rent-map or to a rent-map-* class, so none of it touches another Leaflet map or the rest of the page.
+ */
+
+/* The map is its own stacking context: Leaflet's panes (200 to 700) and controls (1000) stay inside
+   it and cannot paint over the sticky header, the Copilot, or the other overlays. */
+.rent-map {
+  position: relative;
+  isolation: isolate;
+  background: #09090b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* Dark basemap: the filter is on the tile pane only, so pins, controls and the attribution keep
+   their own colors. */
+.rent-map .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9);
+}
+
+/* Pin colors are shared by the map and the legend swatches. */
+.rent-map-pin--green {
+  background: #34d399;
+  border-color: #ecfdf5;
+  color: #022c22;
+}
+
+.rent-map-pin--amber {
+  background: #fbbf24;
+  border-color: #fffbeb;
+  color: #1c1400;
+}
+
+.rent-map-pin--neutral {
+  background: #d4d4d8;
+  border-color: #52525b;
+  color: #18181b;
+}
+
+.rent-map .rent-map-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border-width: 2px;
+  border-style: solid;
+  box-shadow: 3px 3px 0 #000;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.rent-map .rent-map-pin:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 3px;
+}
+
+.rent-map-swatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  min-width: 1.75rem;
+  height: 1.5rem;
+  padding: 0 0.25rem;
+  border-width: 2px;
+  border-style: solid;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+/* Red city-center context: a hollow diamond ring, not a pin, and not clickable or focusable. It is
+   wider than a pin and sits under the pins, so a pin at the same spot never has its color changed
+   and the ring still shows around it. */
+.rent-map .rent-map-context,
+.rent-map-context-swatch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+}
+
+.rent-map .rent-map-context > span,
+.rent-map-context-swatch > span {
+  display: block;
+  box-sizing: border-box;
+  background: rgba(239, 68, 68, 0.12);
+  border: 3px solid #ef4444;
+  transform: rotate(45deg);
+}
+
+.rent-map .rent-map-context > span {
+  width: 44px;
+  height: 44px;
+}
+
+.rent-map-context-swatch > span {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+}
+
+.rent-map.leaflet-container .leaflet-bar a {
+  width: 36px;
+  height: 36px;
+  line-height: 36px;
+  background-color: #18181b;
+  color: #fafafa;
+  border-bottom-color: #3f3f46;
+}
+
+.rent-map.leaflet-container .leaflet-bar a:hover,
+.rent-map.leaflet-container .leaflet-bar a:focus-visible {
+  background-color: #3f3f46;
+}
+
+.rent-map.leaflet-container .leaflet-control-attribution {
+  background: rgba(9, 9, 11, 0.9);
+  color: #d4d4d8;
+  font-size: 11px;
+  padding: 2px 6px;
+}
+
+.rent-map.leaflet-container .leaflet-control-attribution a {
+  color: #67e8f9;
+  text-decoration: underline;
+}
+
 /* Custom scrollbars */
 ::-webkit-scrollbar {
   width: 8px;
