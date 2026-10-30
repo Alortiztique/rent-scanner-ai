@@ -218,3 +218,10 @@ export interface TavilySearchResult {
   score?: number;
   published_date?: string;
 }
+
+export interface AlertPreferences {
+  cityId: string;
+  maxPriceLocal: number | null;
+  minDealScore: number;
+  channel: 'telegram' | 'whatsapp';
+}

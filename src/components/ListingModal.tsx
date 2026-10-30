@@ -1,10 +1,11 @@
-import React, { useLayoutEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import type { Listing, RadarListing, ScoutListing } from '../types';
 import { formatCurrency, formatUsd } from '../utils/formatters';
 import { isScoutListing } from '../services/scoutListings';
 import { ClauseAuditSection } from './ClauseAuditPanel';
 import { FairRentMetrics } from './FairRentMetrics';
 import { formatSourceHost } from '../services/tavilySearch';
+import { useModalDialog, MODAL_DIALOG_CLASS as DIALOG_CLASS } from './useModalDialog';
 import {
   X,
   ShieldCheck,
@@ -50,52 +51,6 @@ export const ListingModal: React.FC<ListingModalProps> = ({ listing, onClose, pa
     />
   );
 };
-
-/**
- * Shows a details view as a native modal dialog. showModal() makes the rest of the page inert,
- * so Tab and Shift+Tab cannot reach covered Radar controls, and Escape closes it natively.
- * A native close reports through onClose so React clears the selection. Closing by button
- * unmounts the view instead; cleanup then closes the dialog and refocuses the control that
- * opened it.
- */
-function useModalDialog(onClose: () => void) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-  const initialFocusRef = useRef<HTMLButtonElement>(null);
-  const onCloseRef = useRef(onClose);
-
-  useLayoutEffect(() => {
-    onCloseRef.current = onClose;
-  });
-
-  useLayoutEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog || !dialog.isConnected) return;
-    const active = document.activeElement;
-    const opener = active instanceof HTMLElement && active !== document.body && !dialog.contains(active) ? active : null;
-
-    // The close event is queued, so one from an earlier setup can arrive after the dialog was
-    // reopened (for example on a remount). Only a dialog that is actually closed reports it.
-    const handleClose = () => {
-      if (!dialog.open) onCloseRef.current();
-    };
-    dialog.addEventListener('close', handleClose);
-    if (!dialog.open) dialog.showModal();
-    initialFocusRef.current?.focus();
-
-    return () => {
-      dialog.removeEventListener('close', handleClose);
-      if (dialog.open) dialog.close();
-      if (opener?.isConnected) opener.focus();
-    };
-  }, []);
-
-  return { dialogRef, initialFocusRef };
-}
-
-// Fills the viewport and centers the panel like the former overlay; ::backdrop dims the page.
-// Display is set only while open so the user agent's closed-dialog hiding still applies.
-const DIALOG_CLASS =
-  'fixed inset-0 m-0 h-full max-h-none w-full max-w-none open:flex items-center justify-center p-3 sm:p-6 bg-transparent text-zinc-100 overflow-y-auto backdrop:bg-black/85 backdrop:backdrop-blur-sm';
 
 const ScoutCandidateDetails: React.FC<{ candidate: ScoutListing; onClose: () => void }> = ({
   candidate,

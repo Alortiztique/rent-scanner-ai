@@ -22,7 +22,7 @@ yarn.lock
 .dev.vars
 .dev.vars.*
 
-# Python
+# Python & Backend Data
 __pycache__/
 *.py[cod]
 *$py.class
@@ -30,6 +30,11 @@ __pycache__/
 venv/
 ENV/
 scored_listings_feed.json
+backend/users_db.json
+backend/*.db
+backend/*.db-*
+backend/users_db.*.tmp
+!backend/users_db.example.json
 
 # Editor directories and files
 .vscode/*
@@ -41,3 +46,9 @@ scored_listings_feed.json
 *.njsproj
 *.sln
 *.sw?
+
+# Personal Harness rules and log (Sebastian Cortès)
+LOG.md
+TASKS.md
+RULES.md
+*.personal.*

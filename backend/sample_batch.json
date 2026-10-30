@@ -1,0 +1,115 @@
+[
+  {
+    "id": "bogota-batch-01",
+    "demo": true,
+    "type": "studio",
+    "currency": "COP",
+    "noBrokerFee": true,
+    "utilitiesIncluded": true,
+    "title": "Chapinero Alto Terrace Studio // 4-Month Direct Sublease",
+    "cityId": "bogota",
+    "cityName": "Bogotá",
+    "neighborhood": "Chapinero Alto",
+    "priceLocal": 850000,
+    "priceUsd": 210,
+    "currencySymbol": "COP $",
+    "originalMarketPriceUsd": 450,
+    "savingsPercentage": 53,
+    "dealScore": 96,
+    "source": "Reddit Sublet (r/bogota)",
+    "sourceUrl": "https://reddit.com/r/bogota/comments/chapinero_sublet",
+    "nemotronAudit": {
+      "summary": "Sample audit: review the sublease term and confirm the source before paying.",
+      "scamRiskScore": 0,
+      "gentrificationIndex": "Anti-Gentrification Champion",
+      "fairRentScore": 96,
+      "verifiedPerks": [
+        "Zero broker commissions or extortionate fees",
+        "Utilities included (Water, gas, 300Mbps fiber WiFi)",
+        "Fully furnished studio suited for digital nomad or student"
+      ]
+    }
+  },
+  {
+    "id": "london-batch-02",
+    "demo": true,
+    "type": "room",
+    "currency": "GBP",
+    "title": "Deptford Modern Flatshare // Double Bedroom",
+    "cityId": "london",
+    "cityName": "London",
+    "neighborhood": "Deptford High Street",
+    "priceLocal": 850,
+    "priceUsd": 1080,
+    "currencySymbol": "£",
+    "originalMarketPriceUsd": 1400,
+    "savingsPercentage": 22,
+    "dealScore": 78,
+    "source": "Spareroom",
+    "sourceUrl": "https://spareroom.co.uk/flatshare/deptford",
+    "nemotronAudit": {
+      "scamRiskScore": 2,
+      "gentrificationIndex": "Corporate Gouging Alert",
+      "fairRentScore": 76,
+      "verifiedPerks": [
+        "Close to Deptford Bridge DLR"
+      ]
+    }
+  },
+  {
+    "id": "nyc-batch-03",
+    "demo": true,
+    "type": "room",
+    "currency": "USD",
+    "noBrokerFee": true,
+    "utilitiesIncluded": true,
+    "title": "Bushwick Industrial Converted Loft // 3-Month Sublet Room",
+    "cityId": "nyc",
+    "cityName": "New York City",
+    "neighborhood": "Bushwick (Morgan L)",
+    "priceLocal": 1150,
+    "priceUsd": 1150,
+    "currencySymbol": "$",
+    "originalMarketPriceUsd": 2600,
+    "savingsPercentage": 56,
+    "dealScore": 95,
+    "source": "Craigslist Stealth",
+    "sourceUrl": "https://newyork.craigslist.org/sublets/bushwick_loft",
+    "nemotronAudit": {
+      "scamRiskScore": 1,
+      "gentrificationIndex": "Anti-Gentrification Champion",
+      "fairRentScore": 95,
+      "verifiedPerks": [
+        "Direct primary tenant handover with key exchange",
+        "Zero broker commission ($2,000+ upfront savings)",
+        "Utilities and gigabit WiFi bundled into flat monthly rent"
+      ]
+    }
+  },
+  {
+    "id": "berlin-batch-04",
+    "demo": true,
+    "type": "entire_apartment",
+    "currency": "EUR",
+    "title": "Neukölln 1-Room Zwischenmiete // Standard Contract",
+    "cityId": "berlin",
+    "cityName": "Berlin",
+    "neighborhood": "Neukölln Outer",
+    "priceLocal": 950,
+    "priceUsd": 1030,
+    "currencySymbol": "€",
+    "originalMarketPriceUsd": 1100,
+    "savingsPercentage": 7,
+    "dealScore": 65,
+    "source": "WG-Gesucht",
+    "sourceUrl": "https://wg-gesucht.de/berlin/zwischenmiete",
+    "nemotronAudit": {
+      "scamRiskScore": 3,
+      "gentrificationIndex": "Corporate Gouging Alert",
+      "fairRentScore": 64,
+      "verifiedPerks": [
+        "Anmeldung registration possible"
+      ]
+    }
+  }
+]

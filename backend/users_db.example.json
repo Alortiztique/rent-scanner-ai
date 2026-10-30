@@ -1,0 +1,19 @@
+{
+  "1234567890": {
+    "chatId": 1234567890,
+    "username": "SampleRenter",
+    "firstName": "Alex",
+    "cityId": "bogota",
+    "cityName": "Bogotá",
+    "housingType": "all",
+    "maxBudget": 1500000,
+    "currency": "COP $",
+    "currencyCode": "COP",
+    "noBrokerFeeOnly": true,
+    "utilitiesIncludedOnly": false,
+    "sortBy": "dealScore",
+    "minDealScore": 95,
+    "active": true,
+    "configuredAt": "2026-10-18T20:00:00Z"
+  }
+}

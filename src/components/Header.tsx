@@ -1,12 +1,13 @@
 import React from 'react';
-import { Terminal, Shield, Cpu, Globe, Users, ExternalLink, Zap } from 'lucide-react';
+import { Bell, Terminal, Shield, Cpu, Globe, Users, ExternalLink, Zap } from 'lucide-react';
 
 interface HeaderProps {
   onOpenTeamTasks: () => void;
   onOpenLiveScout: () => void;
+  onOpenAlerts: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ onOpenTeamTasks, onOpenLiveScout }) => {
+export const Header: React.FC<HeaderProps> = ({ onOpenTeamTasks, onOpenLiveScout, onOpenAlerts }) => {
   return (
     <header className="border-b border-zinc-800 bg-zinc-950/90 backdrop-blur sticky top-0 z-40">
       {/* Top micro-ticker bar */}
@@ -68,7 +69,16 @@ export const Header: React.FC<HeaderProps> = ({ onOpenTeamTasks, onOpenLiveScout
         </div>
 
         {/* Action controls */}
-        <div className="flex items-center gap-2.5 w-full md:w-auto">
+        <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
+          <button
+            type="button"
+            onClick={onOpenAlerts}
+            aria-haspopup="dialog"
+            className="flex items-center justify-center gap-2 px-3 py-2 bg-zinc-900 hover:bg-zinc-800 text-emerald-400 border border-emerald-800 text-xs font-mono font-bold cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+          >
+            <Bell className="w-4 h-4" aria-hidden="true" />
+            <span>DEAL ALERTS</span>
+          </button>
           <button
             onClick={onOpenLiveScout}
             className="flex-1 md:flex-none flex items-center justify-center gap-2 px-3 py-2 bg-zinc-900 hover:bg-zinc-800 text-cyan-400 border border-cyan-800/80 hover:border-cyan-500 text-xs font-mono font-bold transition shadow-[2px_2px_0px_0px_#0e7490] cursor-pointer"
